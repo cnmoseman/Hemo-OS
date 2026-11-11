@@ -51,14 +51,14 @@ squirting blood from its eyes.
 
 ## Get Hemo
 
-Hemo ships as a prebuilt VMware image (`.ova`) attached to each GitHub release, for
-VMware Workstation, Player, and Fusion. It comes as 7-Zip split volumes
-(`.7z.001`, `.7z.002`, …) with a signed `SHA256SUMS`.
+Hemo ships as a prebuilt VMware image (`.ova`) for VMware Workstation, Player, and
+Fusion. Download it from the [Hemo OS page](https://cnmoseman.github.io/hemo-os/); each
+[GitHub release](https://github.com/cnmoseman/hemo-os/releases/latest) carries the signed
+`SHA256SUMS` to check it.
 
 Import the image, boot it, and log in as `hemo` with password `hemo` (like Kali's
 `kali`/`kali`; change it with `passwd`).
-**Hemo Welcome** opens so you can pick your role(s); their tools install online. The
-first release is not out yet; see [Status](#status).
+**Hemo Welcome** opens so you can pick your role(s); their tools install online.
 
 ## Roles
 

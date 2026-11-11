@@ -9,31 +9,21 @@ This is the first public image. It reports itself as **"Hemo OS (Kali Rolling)"*
 
 ## Download
 
-The OVA is split into 7-Zip volumes under 2 GiB each (GitHub caps a single
-release file at 2 GiB). Download **every** `.7z.0NN` part into one folder, plus
-`SHA256SUMS`, `SHA256SUMS.minisig`, and `hemo-release.pub`.
+**[hemo-0.1.0-vmware.ova](https://pub-2837a6191ae149fcb82eca0c04982e0a.r2.dev/hemo-0.1.0-vmware.ova)** (one file, 5.1 GB). It's hosted outside GitHub
+because GitHub caps release files at 2 GiB. Import it as is; there's nothing to extract.
+
+To check it, download these files from this release into the same folder:
 
 | File | What it is |
 | --- | --- |
-| `hemo-0.1.0-vmware.ova.7z.001` … `.003` | the image, split |
-| `SHA256SUMS` | checksums of the parts |
+| `SHA256SUMS` | checksum of the `.ova` |
 | `SHA256SUMS.minisig` | minisign signature over `SHA256SUMS` |
 | `hemo-release.pub` | the public key (also printed below) |
-| `hemo-0.1.0-vmware.ova.sha256` | checksum of the raw image (pre-pack) |
 
-## Verify, then unpack
-
-Verify the signature and the parts before you unpack — one line:
+## Verify
 
 ```sh
-minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c --ignore-missing SHA256SUMS
-```
-
-Then reassemble and extract (point 7-Zip at the **`.001`** volume; it pulls in
-the rest automatically):
-
-```sh
-7z x hemo-0.1.0-vmware.ova.7z.001
+minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c SHA256SUMS
 ```
 
 `minisign` ships in Kali and most distro repos (`apt-get install minisign`). The
@@ -90,10 +80,7 @@ sudo hemo-pkg install-role red_team      # list-roles shows them all
   full-upgrade` keeps the base current; re-run a role in Hemo Welcome to pull new
   tool versions.
 
-## Checksums
-
-Raw image (taken before packing, so the parts provably reconstruct what was
-tested):
+## Checksum
 
 ```
 76340758e230617e8eb51b4a2ef89846339a4f8433677981e05cd89bc3ef1264  hemo-0.1.0-vmware.ova
