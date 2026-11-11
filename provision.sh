@@ -14,9 +14,8 @@ set -uo pipefail
 
 OPERATOR="hemo"
 HOSTNAME_NEW="hemo"
-# App choices — install.sh asks these in its walkthrough and passes them as env
-# vars. Without them (provision.sh alone, or install.sh --yes) a re-run keeps what
-# was recorded last time (here or in Hemo Welcome); a first run takes the defaults.
+# App choices — set these as env vars. Without them a re-run keeps what was recorded
+# last time (here or in Hemo Welcome); a first run takes the defaults.
 NOTES="${HEMO_NOTES:-$(cat /var/lib/hemo/notes-choice 2>/dev/null)}"
 CODE_EDITOR="${HEMO_CODE_EDITOR:-$(cat /var/lib/hemo/editor-choice 2>/dev/null)}"
 TERM_EDITOR="${HEMO_TERM_EDITOR:-$(cat "/home/$OPERATOR/.config/hemo/editor" 2>/dev/null)}"
@@ -663,7 +662,7 @@ echo "role(s); their tools install online. Later: 'sudo hemo-roles' adds roles,"
 echo "'hemo-theme <role>' re-skins. See RUNBOOK.md for turning this into a VMware image."
 
 # Critical packages missing => the run did not fully succeed. Fail loudly and
-# non-zero so install.sh / the build flow stops and the image is never sealed
+# non-zero so the build flow stops and the image is never sealed
 # with the container runtime (etc.) silently absent. The seal/sysprep audit also
 # checks for these independently.
 if [ ${#CRITICAL[@]} -gt 0 ]; then

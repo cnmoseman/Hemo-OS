@@ -36,27 +36,14 @@ without repartitioning — so:
 2. **Size it** (VM must be powered off): VM → Settings → set memory **8 GB**,
    processors **4**. The virtual disk is already thin-provisioned.
 
-3. **Get the script in.** Easiest: open a terminal in the VM and run
-
-   **One-liner (recommended)** — clones the repo and provisions in one shot:
+3. **Get the repo in.** Open a terminal in the VM and clone it (or copy it in with
+   VMware drag-and-drop or a shared folder):
    ```
-   curl -fsSL https://raw.githubusercontent.com/cnmoseman/Hemo-OS/main/install.sh | sudo bash
-   ```
-   It walks you through a few choices first (notes app, code editor, terminal
-   editor, keep or strip Kali's stock toolset + XFCE), then installs unattended
-   and offers to reboot. After reboot, log in as `hemo` — Hemo Welcome opens for
-   role selection. `--yes` skips the questions (all defaults, no reboot).
-   (While the repo is private, pass an authenticated URL:
-   `--repo https://<user>:<token>@github.com/cnmoseman/Hemo-OS.git`.)
-
-   **Or from a checkout** (same walkthrough; installs the checkout in place, so
-   local changes are what you test):
-   ```
-   git clone <this repo>        # or use VMware drag-and-drop / a shared folder
-   cd <repo> && sudo ./install.sh
+   git clone https://github.com/cnmoseman/hemo-os.git
+   cd hemo-os
    ```
 
-4. **Provision** (skip if you used the one-liner).
+4. **Provision.**
    ```
    sudo ./provision.sh
    ```
