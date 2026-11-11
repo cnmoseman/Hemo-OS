@@ -26,8 +26,8 @@ hemo-verify          # run it in the download folder
 ```
 
 On any machine (the key is published below and fingerprinted
-`RWQut/Nu6172YPc02Gjo1jxl0Wc1/Kp9X40ZVfywOU7ipvB2mVfsZoeN`,
-id `60F65EEB6EF3B72E`):
+`RWQzpPBysI/5LuAT3QYSxApS/ZTU2xbJKyqrzgvfLSi6N3RlPJeQvoC8`,
+id `2EF98FB072F0A433`):
 
 ```sh
 minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c --ignore-missing SHA256SUMS

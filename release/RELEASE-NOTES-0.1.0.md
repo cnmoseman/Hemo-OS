@@ -1,11 +1,3 @@
-<!-- DRAFT for the first release. Version held at 0.1.0 and NOT public yet.
-     Fill these in AFTER the re-provisioned OVA exists and the release has been packed:
-       - <N>              number of .7z.0NN parts (expect ~3 at ~4.78 GB)
-       - <raw-sha256>     contents of hemo-0.1.0-vmware.ova.sha256 (pre-pack)
-       - <pubkey-line>    the single line from release/hemo-release.pub
-       - <pkglist>        the baseline package-list filename, if attached
-     Everything else is final copy. -->
-
 # Hemo OS 0.1.0 — VMware OVA
 
 **Hemo OS** is a curated, durable Kali-based pentest / red-team distro. VM-first,
@@ -23,7 +15,7 @@ release file at 2 GiB). Download **every** `.7z.0NN` part into one folder, plus
 
 | File | What it is |
 | --- | --- |
-| `hemo-0.1.0-vmware.ova.7z.001` … `.00<N>` | the image, split |
+| `hemo-0.1.0-vmware.ova.7z.001` … `.003` | the image, split |
 | `SHA256SUMS` | checksums of the parts |
 | `SHA256SUMS.minisig` | minisign signature over `SHA256SUMS` |
 | `hemo-release.pub` | the public key (also printed below) |
@@ -48,7 +40,7 @@ the rest automatically):
 public key for this and every Hemo OS release:
 
 ```
-<pubkey-line>
+RWQzpPBysI/5LuAT3QYSxApS/ZTU2xbJKyqrzgvfLSi6N3RlPJeQvoC8
 ```
 
 ## Import and first boot
@@ -89,7 +81,6 @@ Install a role from Hemo Welcome, or from a terminal:
 sudo hemo-pkg install-role red_team      # list-roles shows them all
 ```
 
-The baseline package list for this image is attached (`<pkglist>`).
 
 ## Notes
 
@@ -105,5 +96,5 @@ Raw image (taken before packing, so the parts provably reconstruct what was
 tested):
 
 ```
-<raw-sha256>  hemo-0.1.0-vmware.ova
+76340758e230617e8eb51b4a2ef89846339a4f8433677981e05cd89bc3ef1264  hemo-0.1.0-vmware.ova
 ```
