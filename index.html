@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hemo OS</title>
+<meta name="description" content="Hemo OS: a Kali-based operating system for security professionals, rebuilt for every engagement. Pick a role and it installs only that discipline's tools.">
+<meta property="og:title" content="Hemo OS">
+<meta property="og:description" content="A Kali-based OS for security professionals, rebuilt for every engagement.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://cnmoseman.github.io/hemo-os/">
+<meta name="theme-color" content="#d6c098">
+<link rel="canonical" href="https://cnmoseman.github.io/hemo-os/">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="img/favicon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<meta property="og:title" content="Hemo OS">
+<meta property="og:description" content="A Kali-based OS for security professionals, rebuilt for every engagement. Pick a role and it installs only that discipline's tools.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://cnmoseman.github.io/hemo-os/">
+<meta property="og:image" content="https://cnmoseman.github.io/hemo-os/img/og-hemo.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cnmoseman.github.io/hemo-os/img/og-hemo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caprasimo&family=Averia+Serif+Libre:ital,wght@0,400;0,700;1,400&family=Courier+Prime:wght@400;700&display=swap">
+<style>
+/* Layout: a seed-catalog cover on tan stock, then a walnut rack of eight role packets with one packet laid open below it, then catalog pages (the base, report-mode plate, order form). */
+:root{
+  --tan:#d6c098; --tan-deep:#c9b083; --cream:#f3eee7; --cream-2:#e8e0d5; --rule:#cbbfae;
+  --ink:#221d19; --ink-2:#2a241e; --soft:#4f453b; --brown:#966b4f; --brown-ink:#664530; --saddle:#c9a37a;
+  --rack:#221d19; --rack-2:#2c2621; --rack-rule:#3f372f; --rack-text:#e8dfd4; --rack-muted:#b5a898;
+  /* accent (Hemo logo brown): fill = raw accent, on-fill = text on it, on-cream = >=4.5:1 on cream, on-dark = >=4.5:1 on rack */
+  --acc:#966b4f; --acc-on:#ffffff; --acc-cream:#664530; --acc-dark:#c9a37a;
+  --display:"Caprasimo","Cooper Black","Georgia",serif;
+  --text:"Averia Serif Libre","Georgia",serif;
+  --script:"Averia Serif Libre","Georgia",serif;
+  --code:"Courier Prime","Courier New",monospace;
+  color-scheme:light;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scrollbar-color:var(--brown) var(--tan-deep)}
+body{margin:0;background:var(--tan);color:var(--ink-2);font:400 17px/1.6 var(--text);-webkit-font-smoothing:antialiased}
+::selection{background:var(--acc);color:var(--acc-on)}
+::-webkit-scrollbar{width:12px}::-webkit-scrollbar-track{background:var(--tan-deep)}::-webkit-scrollbar-thumb{background:var(--brown);border:3px solid var(--tan-deep);border-radius:6px}
+a{color:inherit;text-decoration-color:var(--brown);text-decoration-thickness:1px;text-underline-offset:.2em}
+:focus-visible{outline:3px solid var(--acc);outline-offset:3px}
+img{max-width:100%;display:block}
+h1,h2,h3{font-family:var(--display);font-weight:400;line-height:1.02;letter-spacing:-.005em;text-wrap:balance;margin:0}
+p{margin:0}
+code,.code{font-family:var(--code)}
+.wrap{max-width:1240px;margin-inline:auto;padding-inline:max(16px,3vw)}
+.skip{position:absolute;left:12px;top:-60px;background:var(--ink);color:var(--cream);padding:10px 14px;z-index:9}
+.skip:focus{top:12px}
+.sr{position:absolute!important;clip:rect(0 0 0 0);width:1px;height:1px;overflow:hidden;white-space:nowrap}
+.wm{display:block;aspect-ratio:788/152;background:currentColor;
+  -webkit-mask:url(../assets/hemo-wordmark.png) center/contain no-repeat;mask:url(../assets/hemo-wordmark.png) center/contain no-repeat}
+
+/* ---------- cover ---------- */
+.cover{padding:clamp(14px,2.2vw,28px) max(16px,2.2vw) 0}
+.cover-in{border:3px double var(--brown);outline:1px solid var(--brown);outline-offset:6px;margin:6px;padding:clamp(18px,2vw,28px) clamp(16px,3vw,44px) clamp(22px,2.4vw,34px);position:relative;text-align:center}
+.cover-top{display:flex;justify-content:space-between;align-items:center;gap:16px;font:italic 400 17px/1.3 var(--script);color:var(--soft);text-align:left}
+.cover-top .seal{display:block;flex:none;width:100px;height:auto}
+@media (max-width:600px){.cover-top .seal{width:72px}}
+.cover-top p:last-child{text-align:right}
+.cover .wm{width:min(500px,78vw);margin:clamp(10px,1.4vw,18px) auto 0;color:var(--ink)}
+.cover h1{font-size:clamp(32px,4vw,56px);margin:clamp(12px,1.6vw,20px) auto 0;max-width:22ch;color:var(--ink)}
+.lede{font:italic 400 clamp(19px,1.7vw,23px)/1.45 var(--script);max-width:52ch;margin:14px auto 0;color:var(--ink-2)}
+.slip{display:flex;flex-wrap:wrap;align-items:stretch;max-width:860px;margin:clamp(20px,2.4vw,30px) auto 0;background:var(--ink);color:var(--cream);text-align:left;box-shadow:0 10px 24px -12px rgba(34,29,25,.6)}
+.slip pre{flex:1 1 420px;min-width:0;margin:0;padding:16px 18px;font:400 15px/1.5 var(--code);white-space:pre-wrap;word-break:break-all}
+.slip pre b{color:var(--saddle);font-weight:700;margin-right:.6ch}
+.copy{flex:0 0 auto;font:700 15px var(--code);letter-spacing:.06em;text-transform:uppercase;border:0;background:var(--acc);color:var(--acc-on);padding:0 22px;min-height:52px;cursor:pointer;transition:filter .2s}
+.copy:hover{filter:brightness(1.08)}
+.copy:active{filter:brightness(.92)}
+.dl{margin-top:14px;font-size:16px}
+.dl a{font-family:var(--code);font-weight:700;margin-inline:.35em;color:var(--ink)}
+.dl a:hover{color:var(--brown-ink)}
+.dl span{color:var(--soft)}
+.cover nav{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 0;font:italic 400 17px var(--script)}
+.cover nav a{padding:2px 12px;text-decoration:none;color:var(--ink-2)}
+.cover nav a+a{border-left:1px solid var(--brown)}
+.cover nav a:hover{text-decoration:underline;color:var(--brown-ink)}
+
+/* ---------- rack ---------- */
+.rack{background:var(--rack);border-top:6px solid var(--brown);color:var(--rack-text);margin-top:clamp(14px,1.8vw,24px);padding-block:0 clamp(40px,5vw,72px);position:relative}
+.rack::before{content:"";display:block;height:20px;background:linear-gradient(#5a4a3e,#3a312a 18%,#2a231e 70%,#15110e);box-shadow:0 10px 14px -6px rgba(0,0,0,.75);border-bottom:1px solid #0e0b09}
+.slots{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:clamp(8px,1.1vw,16px);padding-top:0;margin-top:-1px}
+.pk{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;--paper:#f1e8d8;--flap:#e2d3b9;background:var(--paper);color:var(--ink-2);margin-block:7px 7px;filter:drop-shadow(0 2px 2px rgba(0,0,0,.45)) drop-shadow(0 12px 12px rgba(0,0,0,.55));transform:translateY(0);transition:transform .45s cubic-bezier(.16,1,.3,1),filter .45s cubic-bezier(.16,1,.3,1);position:relative}
+/* pinked paper edges: teeth up on the flap, crimp down at the bottom */
+.pk::before,.pk::after{content:"";position:absolute;left:0;right:0;height:6px;background-size:10px 6px;background-repeat:repeat-x}
+.pk::before{bottom:100%;background-image:conic-gradient(from 135deg at 50% 0,var(--flap) 90deg,transparent 0)}
+.pk::after{top:100%;background-image:conic-gradient(from -45deg at 50% 100%,var(--paper) 90deg,transparent 0)}
+.pk:hover{transform:translateY(-6px)}
+.pk[aria-pressed="true"]{transform:translateY(-14px);filter:drop-shadow(0 4px 3px rgba(0,0,0,.45)) drop-shadow(0 24px 18px rgba(0,0,0,.7))}
+.pk:focus-visible{outline:3px solid var(--rack-text);outline-offset:9px}
+.pk .flap{display:block;background:linear-gradient(rgba(255,255,255,.28),rgba(255,255,255,0) 60%),var(--flap);padding:4px 6px 5px;text-align:center;font:italic 400 clamp(11px,.95vw,14px)/1.1 var(--script);color:var(--soft);box-shadow:inset 0 -1px rgba(34,29,25,.28),0 2px 3px -1px rgba(34,29,25,.25);position:relative;z-index:1}
+.pk .face{display:flex;flex-direction:column;padding:8px 7px 0;position:relative;
+  /* the packet bulges with seeds: lit from the upper left, edges rolling away into shadow */
+  background:radial-gradient(120% 70% at 38% 34%,rgba(255,255,255,.38),transparent 62%),linear-gradient(90deg,rgba(60,40,20,.20),rgba(60,40,20,0) 14%,rgba(60,40,20,0) 80%,rgba(60,40,20,.26)),linear-gradient(rgba(60,40,20,0) 70%,rgba(60,40,20,.16))}
+.pk .face::after{content:"";position:absolute;left:12%;right:12%;bottom:0;height:10px;background:radial-gradient(50% 100% at 50% 100%,rgba(60,40,20,.18),transparent);pointer-events:none}
+.pk .art{position:relative;display:block;border:1px solid var(--ink);outline:1px solid var(--ink);outline-offset:2px;margin:3px}
+.pk img{display:block;aspect-ratio:3/3.7;width:100%;object-fit:cover;object-position:52% 60%}
+.pk .band::before,.pk .band::after{content:"";position:absolute;bottom:-5px;border-top:5px solid rgba(0,0,0,.55)}
+.pk .band::before{left:0;border-left:9px solid transparent}
+.pk .band::after{right:0;border-right:9px solid transparent}
+.pk .band{position:absolute;left:-9px;right:-9px;bottom:10px;background:linear-gradient(rgba(255,255,255,.22),rgba(255,255,255,0) 45%,rgba(0,0,0,.12)),var(--c);color:var(--on);font:400 clamp(12px,1.05vw,16px)/1.05 var(--display);padding:6px 4px 5px;text-align:center;box-shadow:0 3px 4px -2px rgba(34,29,25,.55)}
+.pk .yield{display:grid;gap:2px;text-align:center;padding:9px 4px 9px}
+.pk .yield small{font:italic 400 clamp(11px,.9vw,13px)/1 var(--script);color:var(--soft)}
+.pk .yield b{font:700 13px/1 var(--code);letter-spacing:.02em;color:var(--ink)}
+.rack-note{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px;margin-top:22px;color:var(--rack-muted);font:italic 400 18px/1.4 var(--script)}
+
+/* the opened packet: a flat, unglued packet (front panel + back panel on one sheet) */
+.open{margin-top:clamp(26px,3vw,40px);perspective:1800px}
+.sheet{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);background:var(--cream);color:var(--ink-2);box-shadow:0 30px 50px -28px rgba(0,0,0,.9);transform-origin:50% 50%;transition:transform .5s cubic-bezier(.16,1,.3,1),opacity .5s}
+.sheet.turn{transform:rotateX(78deg);opacity:.2;transition:transform .22s ease-in,opacity .22s}
+.front{border-right:2px dashed var(--rule);display:flex;flex-direction:column}
+.front .band{background:var(--acc);color:var(--acc-on);padding:18px 22px 16px}
+.front .band h2{font-size:clamp(28px,3.2vw,46px)}
+.front .band p{font:italic 400 18px/1.3 var(--script);margin-top:6px}
+.front figure{margin:0;flex:1;min-height:260px;position:relative;border-block:1px solid var(--ink)}
+.front figure img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 58%}
+.front .foot{display:flex;justify-content:space-between;align-items:center;padding:12px 22px;gap:12px}
+.front .foot .wm{width:120px;color:var(--ink)}
+.front .foot span{font:700 14px var(--code)}
+.back{padding:clamp(20px,2.4vw,34px)}
+.back h3{font-size:clamp(22px,2vw,28px);color:var(--ink)}
+.back .focus{font:italic 400 20px/1.4 var(--script);margin-top:6px;max-width:52ch}
+.cols{display:grid;grid-template-columns:minmax(0,1fr);gap:22px;margin-top:22px}
+.grow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 16px;margin:0;font-size:15.5px;line-height:1.45}
+.grow dt{font:700 12px/1.9 var(--code);text-transform:uppercase;letter-spacing:.06em;color:var(--soft);white-space:nowrap}
+.grow dd{margin:0}
+.pair{display:inline-flex;align-items:center;gap:7px;margin:0 6px 4px 0;padding:3px 10px 3px 8px;font:700 13px/1.4 var(--text);color:var(--ink);background:var(--cream);border:1px solid var(--ink);cursor:pointer;transition:background-color .2s}
+.pair::before{content:"";width:10px;height:10px;background:var(--c);box-shadow:0 0 0 1px var(--ink)}
+.pair:hover{background:var(--cream-2)}
+.back .note{font:italic 400 19px/1.45 var(--script);color:var(--ink);margin:22px 0 0;padding-left:16px;border-left:1px solid var(--brown);max-width:56ch}
+.back .sowing{font-size:14.5px;line-height:1.5;color:var(--soft);margin:14px 0 0;max-width:62ch}
+.cols h4{margin:0 0 8px;font:700 14px/1.2 var(--text);text-transform:uppercase;letter-spacing:.12em;color:var(--acc-cream)}
+ul.tools{list-style:none;margin:0;padding:0;columns:2;column-gap:20px;font:400 15px/1.75 var(--code)}
+.more{font:italic 400 17px var(--script);margin-top:6px;color:var(--soft)}
+.more a{color:var(--brown-ink);text-decoration-color:var(--brown)}
+.yieldline{display:flex;align-items:baseline;gap:10px;margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)}
+.yieldline strong{font:400 clamp(30px,3vw,40px)/1 var(--display);color:var(--ink)}
+.yieldline span{color:var(--soft)}
+
+
+/* ---------- catalog pages ---------- */
+section.pg{padding-block:clamp(56px,7vw,104px)}
+.pg h2{font-size:clamp(34px,4.4vw,60px);color:var(--ink)}
+.pg .intro{font:italic 400 clamp(19px,1.6vw,22px)/1.45 var(--script);max-width:58ch;margin-top:14px}
+.orn{height:9px;margin:18px 0 0;max-width:220px;border-top:3px double var(--brown);border-bottom:1px solid var(--brown)}
+
+/* the base: why it holds what it does, then every package in a dropdown */
+.why{margin-top:clamp(28px,3.4vw,44px);display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:3px double var(--ink);border-bottom:1px solid var(--ink)}
+.why>div{padding:24px 24px 26px 0;border-bottom:1px solid var(--rule)}
+.why>div:nth-child(3n+2),.why>div:nth-child(3n){padding-left:24px;border-left:1px solid var(--soft)}
+.why>div:nth-last-child(-n+3){border-bottom:0}
+.why h3{font-size:clamp(21px,1.9vw,26px);color:var(--ink)}
+.why p{margin-top:10px;font-size:16px;max-width:38ch}
+.why code{white-space:nowrap}
+.base-list{margin-top:clamp(24px,3vw,36px);background:var(--cream);box-shadow:0 14px 30px -20px rgba(34,29,25,.7)}
+.base-list summary{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 18px;padding:18px 22px;cursor:pointer;list-style:none;border-bottom:1px solid transparent}
+.base-list summary::-webkit-details-marker{display:none}
+.base-list summary span{font:400 clamp(20px,1.9vw,26px)/1.1 var(--display);color:var(--ink);display:inline-flex;align-items:center;gap:12px}
+.base-list summary span::before{content:"+";font:700 22px/1 var(--code);color:var(--brown);width:1ch}
+.base-list[open] summary span::before{content:"−"}
+.base-list[open] summary{border-bottom-color:var(--rule)}
+.base-list summary small{font:italic 400 17px var(--script);color:var(--soft)}
+.base-list summary:hover span{color:var(--brown-ink)}
+.kits{columns:3 260px;column-gap:32px;padding:22px 22px 6px}
+.kit{break-inside:avoid;margin-bottom:22px}
+.kit h4{margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--rule);font:700 14px/1.2 var(--text);text-transform:uppercase;letter-spacing:.1em;color:var(--brown-ink);display:flex;justify-content:space-between;gap:8px}
+.kit h4 small{font:700 13px var(--code);color:var(--soft);letter-spacing:0}
+.kit ul{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+.kit li{display:grid;gap:1px;font-size:15px;line-height:1.35}
+.kit li a{color:var(--ink);text-decoration-color:var(--rule);text-underline-offset:.2em;justify-self:start}
+.kit li a:hover{text-decoration-color:var(--brown)}
+.kit li code{font:700 14px var(--code)}
+.kit li span{color:var(--soft)}
+.kit-note{margin:0;padding:0 22px 20px;font:italic 400 16px/1.5 var(--script);color:var(--soft);max-width:70ch}
+
+
+/* colour plate */
+.plate{position:relative;background:var(--tan) url(img/login.webp) center/cover no-repeat;border-block:1px solid var(--ink)}
+.plate-in{max-width:780px;margin-inline:auto;text-align:center;padding:clamp(60px,9vw,130px) 16px}
+.plate-card{background:rgba(243,238,231,.94);padding:clamp(22px,3vw,36px);box-shadow:0 20px 40px -24px rgba(34,29,25,.8);border:1px solid var(--ink)}
+.plate h2{font-size:clamp(28px,3.4vw,46px);color:var(--ink)}
+.plate p{margin-top:12px;font-size:16.5px}
+.plate kbd{display:inline-block;font:700 13px/1 var(--code);padding:4px 6px 3px;border:1px solid var(--ink);border-bottom-width:2px;background:var(--cream);color:var(--ink);white-space:nowrap}
+.reasons{list-style:none;margin:20px 0 0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px;text-align:left}
+.reasons li{font-size:15.5px;line-height:1.5;padding-top:12px;border-top:1px solid var(--rule)}
+.reasons b{display:block;font:400 18px/1.2 var(--display);color:var(--ink);margin-bottom:4px}
+.keys{margin:22px 0 0;padding-top:16px;border-top:2px solid var(--ink);display:grid;gap:8px;text-align:left}
+.keys div{display:grid;grid-template-columns:minmax(0,13em) minmax(0,1fr);gap:4px 16px;align-items:baseline}
+.keys dt{display:flex;flex-wrap:wrap;gap:4px}
+.keys dd{margin:0;font-size:15.5px}
+.plate .saved{font:italic 400 16px/1.45 var(--script);color:var(--soft);margin-top:16px}
+
+/* order form */
+.order{max-width:900px;margin:clamp(28px,3.4vw,44px) auto 0;background:var(--cream);border:2px dashed var(--ink);outline:8px solid var(--cream);padding:clamp(22px,3vw,40px)}
+.order h3{font-size:clamp(24px,2.4vw,32px);color:var(--ink)}
+.order ol{margin:18px 0 0;padding-left:1.4em;display:grid;gap:16px}
+.order li::marker{font:400 20px var(--display);color:var(--brown)}
+.order .slip{margin:10px 0 0;max-width:none}
+.order .dl{margin-top:18px}
+.order .verify-h{margin-top:clamp(24px,3vw,34px)}
+.order .verify-h+p{margin-top:8px}
+.order ol a{color:var(--ink);text-decoration-color:var(--brown)}
+.get{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;max-width:860px;margin:clamp(20px,2.4vw,30px) auto 0}
+.get a{flex:0 1 320px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 18px;background:var(--ink);color:var(--cream);text-decoration:none;box-shadow:0 10px 24px -12px rgba(34,29,25,.6);transition:filter .2s,transform .2s}
+.get a:hover{filter:brightness(1.15);transform:translateY(-2px)}
+.get a:focus-visible{outline:3px solid var(--acc);outline-offset:3px}
+.get b{font:400 20px/1.1 var(--display)}
+.get span{font:700 14px var(--code);letter-spacing:.08em;text-transform:uppercase;color:var(--saddle)}
+.get .soon{position:relative;flex:1 1 200px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 18px;background:var(--ink);color:var(--cream);opacity:.8;cursor:default}
+.get .soon b{font:400 20px/1.1 var(--display)}
+.get .soon .fmt{font:700 14px var(--code);letter-spacing:.08em;text-transform:uppercase;color:var(--saddle)}
+.get .soon .tag{position:absolute;top:-9px;right:-7px;transform:rotate(5deg);background:var(--acc);color:var(--acc-on);font:700 10px var(--code);letter-spacing:.12em;text-transform:uppercase;padding:4px 9px;box-shadow:0 4px 10px -3px rgba(34,29,25,.55)}
+.dl code{font-weight:700}
+.dl a{white-space:nowrap}
+
+footer{background:var(--ink);color:var(--rack-text);padding-block:clamp(40px,5vw,64px);font-size:15.5px}
+.foot-in{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px 40px;align-items:start}
+footer .wm{width:150px;color:var(--rack-text)}
+footer p{max-width:72ch;color:var(--rack-muted)}
+footer p+p{margin-top:10px}
+footer a{color:var(--rack-text)}
+footer a:hover{color:var(--acc-dark)}
+
+/* ---------- responsive ---------- */
+@media (max-width:1000px){
+  .sheet{grid-template-columns:1fr}
+  .front{border-right:0;border-bottom:2px dashed var(--rule)}
+  .front figure{min-height:300px}
+}
+@media (max-width:820px){
+  .slots{grid-template-columns:repeat(4,minmax(0,1fr));row-gap:22px}
+  .reasons{grid-template-columns:1fr}.keys div{grid-template-columns:1fr}
+  .why{grid-template-columns:1fr}.why>div,.why>div:nth-child(3n+2),.why>div:nth-child(3n){padding:20px 0;border-left:0;border-bottom:0}.why>div+div{border-top:1px solid var(--soft)}
+}
+@media (max-width:560px){
+  body{font-size:16px}
+  .cover-top{font-size:15px}
+  .cover-top{flex-wrap:wrap;justify-content:center}.cover-top p{display:none}.cover nav a+a{border-left:0}.cover nav{column-gap:4px}.cover nav a{text-decoration:underline;padding:2px 8px}
+  .cols{grid-template-columns:1fr}
+  .copy{flex-basis:100%;min-height:46px}
+  .pk .band{font-size:11px;padding:5px 2px 4px;left:-6px;right:-6px}
+  .pk .yield b{font-size:11px}
+  .pk .face{padding:6px 5px 0}
+  .foot-in{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){.pk{transition:none}
+  html{scroll-behavior:auto}
+  .pk,.sheet,.sheet.turn{transition:none}
+  .sheet.turn{transform:none;opacity:1}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#rack">Skip to the role packets</a>
+
+<header class="cover">
+  <div class="cover-in">
+    <div class="cover-top">
+      <img class="seal" src="img/hemo-logo.webp" alt="Hemo OS" width="100" height="100">
+      <nav aria-label="Sections">
+        <a href="#rack">The packets</a><a href="#base">The base</a><a href="#report">Screenshots</a><a href="#order">Download</a><a href="docs/">Docs</a>
+      </nav>
+      <p>Role kits for Kali Linux</p>
+    </div>
+    <span class="wm" role="img" aria-label="Hemo OS"></span>
+    <h1>One base. Plant only the kit the job needs.</h1>
+    <p class="lede">Hemo OS is a Kali-based operating system for security professionals, shipped as a ready-to-run VM image you rebuild for every engagement. Each role is a packet of tools, planted on first boot.</p>
+
+    <div class="get" role="group" aria-label="Download an image">
+      <a href="https://github.com/cnmoseman/Hemo-OS/releases/latest"><b>VMware</b><span>OVA</span></a>
+    </div>
+    <p class="dl"><span>Log in as</span> <code>hemo</code> / <code>hemo</code><span> ·</span> <a href="#order">How to install</a></p>
+
+  </div>
+</header>
+
+<main>
+<section class="rack" id="rack" aria-labelledby="rack-h">
+  <div class="wrap">
+    <h2 id="rack-h" class="sr">Role packets</h2>
+    <div class="slots" id="slots" role="group" aria-label="Pick a role packet"></div>
+    <div class="rack-note">
+      <p>Pick a packet to open it. Plant as many as the job needs.</p>
+      <p>The first one you plant is your primary.</p>
+    </div>
+
+    <div class="open" aria-live="polite">
+      <article class="sheet" id="sheet" aria-labelledby="s-name">
+        <div class="front">
+          <div class="band"><h2 id="s-name"></h2><p id="s-tag"></p></div>
+          <figure><img id="s-img" src="img/pentest-c.webp" alt=""></figure>
+          <div class="foot"><span class="wm" role="img" aria-label="Hemo OS"></span><span id="s-key"></span></div>
+        </div>
+        <div class="back">
+          <h3>Planting instructions</h3>
+          <p class="focus" id="s-focus"></p>
+          <div class="cols">
+            <div>
+              <h4>How it grows</h4>
+              <dl class="grow">
+                <dt>Thrives in</dt><dd id="g-thrive"></dd>
+                <dt>Sow</dt><dd id="g-sow"></dd>
+                <dt>Blooms into</dt><dd id="g-bloom"></dd>
+                <dt>Plant beside</dt><dd id="g-pair"></dd>
+              </dl>
+            </div>
+            <div>
+              <h4>Contents</h4>
+              <ul class="tools" id="s-tools"></ul>
+              <p class="more" id="s-more"></p>
+            </div>
+          </div>
+          <p class="note" id="g-note"></p>
+          <p class="sowing">Plant it by ticking it in <strong>Hemo Welcome</strong> on first boot, or later with <code>hemo-roles</code>. <span id="s-theme"></span></p>
+          <div class="yieldline"><strong id="s-yield"></strong><span id="s-yield-l"></span></div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="pg" id="base" aria-labelledby="base-h">
+  <div class="wrap">
+    <h2 id="base-h">A known base for each job</h2>
+    <div class="orn" aria-hidden="true"></div>
+    <p class="intro">Every install starts from the same ground: a desktop, a shell, notes and reporting, and nothing offensive. The test for each package is whether an operator needs it, now or over a long engagement. Size alone never decides.</p>
+    <div class="why">
+      <div><h3>No stock toolset</h3><p>The base never installs Kali's default attack tools. Your tools come from the roles you plant, so every box carries one discipline's kit and nothing it won't use.</p></div>
+      <div><h3>Ready to report</h3><p>Notes in Obsidian, with Cherrytree a click away in Hemo Welcome, PDF reports from Markdown with pandoc, LibreOffice for client documents, and a fixed font and framed captures so every screenshot matches.</p></div>
+      <div><h3>Ready for the client network</h3><p>VPN clients for AnyConnect, GlobalProtect, OpenVPN, IPsec, L2TP and WireGuard, plus remote desktop to Windows hosts, all from the bar.</p></div>
+      <div><h3>Ready to build tools</h3><p>Compilers, Python headers, Go, Rust, pipx and Docker are already there, so role tools that build from source or ship as containers install without a fight.</p></div>
+      <div><h3>Hardened, not in the way</h3><p>AppArmor is on and Firefox runs in a sandbox. The firewall is installed but off, because default-deny blocks the callbacks you're waiting for. Turn it on with <code>hemo-harden on</code>.</p></div>
+      <div><h3>Made for VMware</h3><p>VMware Tools (open-vm-tools) is baked in, so clipboard, drag and drop and window resizing work the moment you log in.</p></div>
+    </div>
+    <details class="base-list">
+      <summary><span>Everything in the base</span><small>130 packages · 6 Firefox add-ons</small></summary>
+      <div class="kits">
+<div class="kit"><h4>Shell &amp; command line <small>18</small></h4><ul><li><a href="https://www.zsh.org/"><code>zsh</code></a><span>The default shell</span></li><li><a href="https://github.com/zsh-users/zsh-autosuggestions"><code>zsh-autosuggestions</code></a><span>Suggests commands from your history as you type</span></li><li><a href="https://github.com/zsh-users/zsh-syntax-highlighting/"><code>zsh-syntax-highlighting</code></a><span>Colors commands green or red before you run them</span></li><li><a href="https://microsoft.com/powershell"><code>powershell</code></a><span>PowerShell, a second shell with the same prompt (Super Shift Enter)</span></li><li><a href="https://github.com/patrickhener/goshs"><code>goshs</code></a><span>Quick file-transfer server (hemo-serve), HTTP/HTTPS/WebDAV/SMB with upload</span></li><li><a href="https://jedisct1.github.io/minisign/"><code>minisign</code></a><span>Checks that a Hemo release download is genuine (hemo-verify)</span></li><li><a href="https://starship.rs"><code>starship</code></a><span>The prompt, themed to the active role</span></li><li><a href="https://github.com/tmux/tmux/wiki"><code>tmux</code></a><span>Terminal multiplexer for long-running sessions, with pane logging into the engagement</span></li><li><a href="https://neovim.io/"><code>neovim</code></a><span>Default code editor, set up with LazyVim</span></li><li><a href="https://www.nano-editor.org/"><code>nano</code></a><span>Simple editor, and the default for quick edits</span></li><li><a href="https://github.com/junegunn/fzf"><code>fzf</code></a><span>Fuzzy finder for files and history</span></li><li><a href="https://github.com/BurntSushi/ripgrep"><code>ripgrep</code></a><span>Fast search through files</span></li><li><a href="https://github.com/sharkdp/bat"><code>bat</code></a><span>File viewer with syntax highlighting</span></li><li><a href="https://github.com/sharkdp/fd"><code>fd-find</code></a><span>Fast, friendly replacement for find</span></li><li><a href="https://jqlang.github.io/jq"><code>jq</code></a><span>Reads and filters JSON</span></li><li><a href="https://git-scm.com/"><code>git</code></a><span>Version control</span></li><li><a href="https://curl.se/"><code>curl</code></a><span>Transfers data over HTTP and more</span></li><li><a href="https://www.gnu.org/software/wget/"><code>wget</code></a><span>Downloads files</span></li></ul></div>
+<div class="kit"><h4>Building role tools <small>12</small></h4><ul><li><a href="https://pkg.kali.org/pkg/build-essential"><code>build-essential</code></a><span>Compilers and make, so tools that build from source install cleanly</span></li><li><a href="https://www.python.org/"><code>python3-dev</code></a><span>Python headers for compiled Python packages</span></li><li><a href="http://xmlsoft.org"><code>libxml2-dev</code></a><span>XML library headers</span></li><li><a href="https://gitlab.gnome.org/GNOME/libxslt/-/wikis/home"><code>libxslt1-dev</code></a><span>XSLT library headers</span></li><li><a href="https://openssl-library.org"><code>libssl-dev</code></a><span>OpenSSL headers</span></li><li><a href="https://sourceware.org/libffi/"><code>libffi-dev</code></a><span>Foreign-function interface headers</span></li><li><a href="http://pkgconf.org/"><code>pkg-config</code></a><span>Finds library flags at build time</span></li><li><a href="https://github.com/pypa/pipx"><code>pipx</code></a><span>Installs Python tools in their own environments</span></li><li><a href="https://go.dev"><code>golang</code></a><span>Go toolchain for Go-based tools</span></li><li><a href="http://www.rust-lang.org/"><code>cargo</code></a><span>Rust toolchain for Rust-based tools</span></li><li><a href="https://mobyproject.org"><code>docker.io</code></a><span>Container runtime for tools that ship as containers</span></li><li><a href="https://github.com/docker/buildx"><code>docker-buildx</code></a><span>Docker build and compose support</span></li></ul></div>
+<div class="kit"><h4>Desktop <small>28</small></h4><ul><li><a href="https://sw.kovidgoyal.net/kitty/"><code>kitty</code></a><span>The default terminal, themed to the active role and used for the fixed-size framed screenshots</span></li><li><a href="https://github.com/DaveDavenport/rofi/"><code>rofi</code></a><span>App launcher and window switcher</span></li><li><a href="https://polybar.github.io/"><code>polybar</code></a><span>The status bar</span></li><li><a href="https://dunst-project.org/"><code>dunst</code></a><span>Notifications</span></li><li><a href="https://github.com/yshui/picom"><code>picom</code></a><span>Compositor for smooth, tear-free windows</span></li><li><a href="https://github.com/nwg-piotr/autotiling/"><code>autotiling</code></a><span>Splits each new window along the longer side</span></li><li><a href="https://github.com/altdesktop/i3ipc-python"><code>python3-i3ipc</code></a><span>Lets hemo-open place new windows on the side your mouse is on</span></li><li><a href="https://github.com/Raymo111/i3lock-color"><code>i3lock-color</code></a><span>Screen lock</span></li><li><a href="https://github.com/wavexx/xss-lock"><code>xss-lock</code></a><span>Locks the screen when idle or before sleep</span></li><li><a href="https://github.com/phillipberndt/autorandr"><code>autorandr</code></a><span>Remembers display layouts</span></li><li><a href="https://feh.finalrewind.org/"><code>feh</code></a><span>Sets the wallpaper</span></li><li><a href="https://pkg.kali.org/pkg/x11-xserver-utils"><code>x11-xserver-utils</code></a><span>Display utilities (xrandr, xset)</span></li><li><a href="https://github.com/erebe/greenclip"><code>greenclip</code></a><span>Clipboard history in the launcher</span></li><li><a href="https://hluk.github.io/CopyQ/"><code>copyq</code></a><span>Clipboard manager with search</span></li><li><a href="https://gitlab.com/chinstrap/gammastep"><code>gammastep</code></a><span>Night light</span></li><li><a href="https://github.com/lxde/lxappearance"><code>lxappearance</code></a><span>Keeps GTK apps on the dark theme</span></li><li><a href="https://pkg.kali.org/pkg/kali-themes-common"><code>kali-themes-common</code></a><span>Icon theme for the launcher, tray and file manager</span></li><li><a href="https://github.com/lxde/lxsession"><code>lxpolkit</code></a><span>Password prompts for admin actions</span></li><li><a href="http://sourceforge.net/projects/yad-dialog/"><code>yad</code></a><span>Simple dialogs for Hemo scripts</span></li><li><a href="https://pygobject.readthedocs.io/"><code>python3-gi</code></a><span>Runs the Hemo Welcome control center</span></li><li><a href="https://www.gtk.org/"><code>gir1.2-gtk-3.0</code></a><span>GTK bindings for Hemo Welcome</span></li><li><a href="https://www.gtk.org/"><code>gir1.2-gdkpixbuf-2.0</code></a><span>Image support for Hemo Welcome</span></li><li><a href="http://python-pillow.github.io/"><code>python3-pil</code></a><span>Draws the accent-colored network icons</span></li><li><a href="https://www.jetbrains.com/lp/mono/"><code>fonts-jetbrains-mono</code></a><span>Fixed terminal font, so screenshots match</span></li><li><a href="https://www.google.com/get/noto/"><code>fonts-noto</code></a><span>Wide language coverage</span></li><li><a href="https://fonts.google.com/noto/specimen/Noto+Color+Emoji"><code>fonts-noto-color-emoji</code></a><span>Color emoji</span></li><li><a href="https://github.com/ryanoasis/nerd-fonts"><code>fonts-nerd-symbols</code></a><span>Icon glyphs for the bar and prompt</span></li><li><a href="http://fontawesome.io/"><code>fonts-font-awesome</code></a><span>Icon glyphs for the bar</span></li></ul></div>
+<div class="kit"><h4>Screenshots <small>6</small></h4><ul><li><a href="https://flameshot.org"><code>flameshot</code></a><span>Screenshot and annotate</span></li><li><a href="https://github.com/naelstrof/maim"><code>maim</code></a><span>Captures windows and regions for the shot helper</span></li><li><a href="https://github.com/jordansissel/xdotool/"><code>xdotool</code></a><span>Finds the active window to capture</span></li><li><a href="https://github.com/astrand/xclip"><code>xclip</code></a><span>Copies images to the clipboard</span></li><li><a href="https://www.imagemagick.org/"><code>imagemagick</code></a><span>Frames screenshots at a consistent width and border</span></li><li><a href="https://codeberg.org/nsxiv/nsxiv"><code>nsxiv</code></a><span>Fast screenshot gallery</span></li></ul></div>
+<div class="kit"><h4>Notes, office &amp; reports <small>15</small></h4><ul><li><a href="https://obsidian.md"><code>obsidian</code></a><span>The default notes app</span></li><li><a href="http://www.libreoffice.org"><code>libreoffice-writer</code></a><span>Opens and edits client documents</span></li><li><a href="http://www.libreoffice.org"><code>libreoffice-calc</code></a><span>Spreadsheets</span></li><li><a href="http://www.libreoffice.org"><code>libreoffice-impress</code></a><span>Presentations</span></li><li><a href="http://www.libreoffice.org"><code>libreoffice-gtk3</code></a><span>Keeps LibreOffice on the dark theme</span></li><li><a href="https://pandoc.org/"><code>pandoc</code></a><span>Converts Markdown notes into reports</span></li><li><a href="http://www.tug.org/texlive/"><code>texlive-xetex</code></a><span>PDF engine for pandoc reports</span></li><li><a href="http://www.tug.org/texlive/"><code>texlive-latex-recommended</code></a><span>LaTeX packages for reports</span></li><li><a href="http://www.tug.org/texlive/"><code>texlive-latex-extra</code></a><span>More LaTeX packages pandoc's template uses</span></li><li><a href="http://www.tug.org/texlive/"><code>texlive-fonts-recommended</code></a><span>Report fonts</span></li><li><a href="http://www.gust.org.pl/projects/e-foundry/latin-modern/"><code>lmodern</code></a><span>Report fonts</span></li><li><a href="https://weasyprint.org/"><code>weasyprint</code></a><span>Turns HTML and CSS into PDF reports</span></li><li><a href="https://www.gimp.org/"><code>gimp</code></a><span>Image editing for reports</span></li><li><a href="https://pwmt.org/projects/zathura"><code>zathura</code></a><span>PDF viewer with vim keys</span></li><li><a href="https://pwmt.org/projects/zathura"><code>zathura-pdf-poppler</code></a><span>PDF support for zathura</span></li></ul></div>
+<div class="kit"><h4>Files &amp; drives <small>18</small></h4><ul><li><a href="https://docs.xfce.org/xfce/thunar/start"><code>thunar</code></a><span>File manager</span></li><li><a href="https://docs.xfce.org/xfce/thunar/archive"><code>thunar-archive-plugin</code></a><span>Archive actions in the right-click menu</span></li><li><a href="https://docs.xfce.org/xfce/thunar/thunar-volman"><code>thunar-volman</code></a><span>Handles plugged-in drives</span></li><li><a href="https://github.com/sxyazi/yazi"><code>yazi</code></a><span>Terminal file manager with image previews</span></li><li><a href="https://github.com/gokcehan/lf"><code>lf</code></a><span>Fast keyboard file manager</span></li><li><a href="https://www.midnight-commander.org"><code>mc</code></a><span>Two-pane file manager, also handy over SSH</span></li><li><a href="https://github.com/ib/xarchiver"><code>xarchiver</code></a><span>Archive manager</span></li><li><a href="https://www.freedesktop.org/wiki/Software/xdg-user-dirs/"><code>xdg-user-dirs</code></a><span>Creates Documents, Downloads, Pictures and the other standard folders</span></li><li><a href="https://packages.debian.org/p7zip-full"><code>p7zip-full</code></a><span>7-Zip archives</span></li><li><a href="https://infozip.sourceforge.net/Zip.html"><code>zip</code></a><span>Creates zip files</span></li><li><a href="https://infozip.sourceforge.net/UnZip.html"><code>unzip</code></a><span>Extracts zip files</span></li><li><a href="https://www.freedesktop.org/wiki/Software/udisks"><code>udisks2</code></a><span>Drive management service</span></li><li><a href="https://github.com/coldfix/udiskie"><code>udiskie</code></a><span>Auto-mounts USB drives</span></li><li><a href="https://gitlab.gnome.org/GNOME/gvfs"><code>gvfs</code></a><span>Virtual file systems for the file manager</span></li><li><a href="https://gitlab.gnome.org/GNOME/gvfs"><code>gvfs-backends</code></a><span>Network shares and devices in the file manager</span></li><li><a href="https://github.com/tuxera/ntfs-3g/wiki"><code>ntfs-3g</code></a><span>Reads and writes Windows drives</span></li><li><a href="https://github.com/exfatprogs/exfatprogs"><code>exfatprogs</code></a><span>exFAT drive support</span></li><li><a href="https://wiki.samba.org/index.php/LinuxCIFS_utils"><code>cifs-utils</code></a><span>Mounts SMB shares</span></li></ul></div>
+<div class="kit"><h4>Browser &amp; passwords <small>2</small></h4><ul><li><a href="https://pkg.kali.org/pkg/firefox-esr"><code>firefox-esr</code></a><span>Browser, sandboxed with bubblewrap</span></li><li><a href="https://keepassxc.org/"><code>keepassxc</code></a><span>Password manager</span></li></ul></div>
+<div class="kit"><h4>Networks &amp; VPNs <small>9</small></h4><ul><li><a href="https://networkmanager.dev"><code>network-manager-applet</code></a><span>Network and VPN menu in the bar</span></li><li><a href="https://www.gnome.org/projects/NetworkManager/"><code>network-manager-openconnect-gnome</code></a><span>Cisco AnyConnect, GlobalProtect and Pulse VPNs</span></li><li><a href="https://networkmanager.dev"><code>network-manager-openvpn-gnome</code></a><span>OpenVPN</span></li><li><a href="https://networkmanager.dev"><code>network-manager-vpnc-gnome</code></a><span>Older Cisco IPsec VPNs</span></li><li><a href="https://github.com/nm-l2tp/NetworkManager-l2tp"><code>network-manager-l2tp-gnome</code></a><span>L2TP VPNs</span></li><li><a href="https://wiki.strongswan.org/projects/strongswan/wiki/NetworkManager"><code>network-manager-strongswan</code></a><span>IKEv2 IPsec VPNs</span></li><li><a href="https://openvpn.net/community/"><code>openvpn</code></a><span>OpenVPN from the command line</span></li><li><a href="https://www.wireguard.com"><code>wireguard-tools</code></a><span>WireGuard tunnels</span></li><li><a href="https://www.freerdp.com/"><code>freerdp3-x11</code></a><span>Remote desktop to Windows hosts</span></li></ul></div>
+<div class="kit"><h4>Virtual machine support <small>5</small></h4><ul><li><a href="https://github.com/vmware/open-vm-tools"><code>open-vm-tools</code></a><span>VMware guest agent</span></li><li><a href="https://github.com/vmware/open-vm-tools"><code>open-vm-tools-desktop</code></a><span>VMware clipboard, drag and drop, and resizing</span></li><li><a href="http://www.qemu.org/"><code>qemu-guest-agent</code></a><span>KVM and QEMU guest agent</span></li><li><a href="https://www.spice-space.org/"><code>spice-vdagent</code></a><span>QEMU clipboard and resizing</span></li><li><a href="https://www.virtualbox.org"><code>virtualbox-guest-x11</code></a><span>VirtualBox clipboard and resizing</span></li></ul></div>
+<div class="kit"><h4>System &amp; sound <small>7</small></h4><ul><li><a href="https://github.com/aristocratos/btop"><code>btop</code></a><span>Resource monitor</span></li><li><a href="https://github.com/fastfetch-cli/fastfetch"><code>fastfetch</code></a><span>System info, with the Hemo lizard</span></li><li><a href="https://pipewire.org/"><code>pipewire</code></a><span>Sound server</span></li><li><a href="https://pipewire.org/"><code>pipewire-pulse</code></a><span>Sound for apps that expect PulseAudio</span></li><li><a href="https://gitlab.freedesktop.org/pipewire/wireplumber"><code>wireplumber</code></a><span>Sound session manager</span></li><li><a href="https://freedesktop.org/software/pulseaudio/pavucontrol/"><code>pavucontrol</code></a><span>Volume mixer</span></li><li><a href="https://github.com/cdemoulins/pamixer"><code>pamixer</code></a><span>Volume control for the bar</span></li></ul></div>
+<div class="kit"><h4>Hardening <small>5</small></h4><ul><li><a href="https://apparmor.net/"><code>apparmor</code></a><span>Confines programs to what they need</span></li><li><a href="https://apparmor.net/"><code>apparmor-utils</code></a><span>AppArmor tools</span></li><li><a href="https://github.com/containers/bubblewrap"><code>bubblewrap</code></a><span>Sandboxes the browser</span></li><li><a href="https://launchpad.net/ufw"><code>ufw</code></a><span>Firewall, installed but off until you run hemo-harden on</span></li><li><a href="https://people.redhat.com/sgrubb/audit/"><code>auditd</code></a><span>System audit log</span></li></ul></div>
+<div class="kit"><h4>Boot &amp; login <small>5</small></h4><ul><li><a href="https://www.freedesktop.org/wiki/Software/Plymouth"><code>plymouth</code></a><span>Boot splash</span></li><li><a href="https://www.freedesktop.org/wiki/Software/Plymouth"><code>plymouth-themes</code></a><span>Boot splash themes</span></li><li><a href="https://github.com/ubuntu/lightdm"><code>lightdm</code></a><span>Login manager</span></li><li><a href="https://github.com/Xubuntu/lightdm-gtk-greeter"><code>lightdm-gtk-greeter</code></a><span>The login screen</span></li><li><a href="https://gnome.pages.gitlab.gnome.org/librsvg/"><code>librsvg2-bin</code></a><span>Renders the Hemo artwork for boot and login</span></li></ul></div>
+<div class="kit"><h4>Firefox add-ons <small>6</small></h4><ul><li><code>FoxyProxy</code><span>Switch the browser between proxies</span></li><li><code>Cookie-Editor</code><span>View, edit and export cookies</span></li><li><code>HackTools</code><span>Payloads, reverse shells and cheat sheets</span></li><li><code>Wappalyzer</code><span>See what a site is built with</span></li><li><code>User-Agent Switcher</code><span>Change the browser's user agent</span></li><li><code>Wayback Machine</code><span>Look up archived versions of a page</span></li></ul></div>
+      </div>
+      <p class="kit-note">Hemo Welcome offers Cherrytree for single-file notes, VSCodium alongside Neovim, and Kali's qterminal if you'd rather have it than kitty. Licensed tools are never baked in; they install from your own storage on first boot.</p>
+    </details>
+  </div>
+</section>
+
+<section class="plate" id="report" aria-labelledby="report-h">
+  <div class="plate-in">
+    <div class="plate-card">
+      <h2 id="report-h">Screenshots that match the report</h2>
+      <p>Set up your desktop however you like day to day. Before you capture evidence, press <kbd>Super</kbd> <kbd>P</kbd> and report mode snaps the whole desktop to your team's screenshot standard. The same keys bring your own look back.</p>
+      <ul class="reasons">
+        <li><b>One report, one look.</b> Every operator captures with the same font size, theme, accent, prompt, opacity and gaps, so a report written by five people reads like one document.</li>
+        <li><b>Readable in the PDF.</b> A fixed font size and a plain prompt, with no transparency or wallpaper behind the terminal text.</li>
+        <li><b>Your setup stays yours.</b> Report mode saves your personal look when it turns on and puts it back when it turns off.</li>
+        <li><b>A standard you can share.</b> It's two text files. Capture your current look with <code>hemo-report set</code>, commit it, and the whole team inherits it.</li>
+      </ul>
+      <dl class="keys">
+        <div><dt><kbd>Super</kbd> <kbd>P</kbd></dt><dd>Report mode on or off</dd></div>
+        <div><dt><kbd>Super</kbd> <kbd>Alt</kbd> <kbd>Enter</kbd></dt><dd>One terminal in the standard, without switching the desktop</dd></div>
+        <div><dt><kbd>Super</kbd> <kbd>Print</kbd></dt><dd>Capture the active window, padded and framed at a fixed width</dd></div>
+        <div><dt><kbd>Super</kbd> <kbd>Shift</kbd> <kbd>Print</kbd></dt><dd>The same for a selected region</dd></div>
+        <div><dt><kbd>Print</kbd></dt><dd>Flameshot, to mark up a capture</dd></div>
+      </dl>
+      <p class="saved">Captures save to the active engagement's <code>screenshots</code> folder (start one with <code>eng new &lt;client&gt;</code>) and are copied to the clipboard, ready to paste into your notes.</p>
+    </div>
+  </div>
+</section>
+
+<section class="pg" id="order" aria-labelledby="order-h">
+  <div class="wrap">
+    <h2 id="order-h">Get Hemo OS</h2>
+    <div class="orn" aria-hidden="true"></div>
+    <div class="order">
+      <h3>From a release image</h3>
+      <ol>
+        <li>Download every part of the VMware image from the <a href="https://github.com/cnmoseman/Hemo-OS/releases/latest">latest release</a>. Each image comes in pieces (<code>.7z.001</code>, <code>.7z.002</code>, &hellip;) so every file stays under GitHub's size limit.</li>
+        <li>Extract it: open the <code>.001</code> file with <a href="https://www.7-zip.org/">7-Zip</a> on Windows, or run <code>7z x</code> on it on Linux or macOS. The other parts are picked up automatically.</li>
+        <li>Import and boot: open the <code>.ova</code> in VMware Workstation, Player or Fusion.</li>
+        <li>Log in as <code>hemo</code> with the password <code>hemo</code>, and change it with <code>passwd</code> when you're ready. Hemo Welcome opens so you can plant your roles.</li>
+      </ol>
+      <h3 class="verify-h">Check the download</h3>
+      <p>Every release is signed. With <code>SHA256SUMS</code>, <code>SHA256SUMS.minisig</code> and <code>hemo-release.pub</code> from the release next to your parts, run:</p>
+      <div class="slip">
+        <pre id="cmd-2"><b aria-hidden="true">$</b>minisign -Vm SHA256SUMS -p hemo-release.pub &amp;&amp; sha256sum -c --ignore-missing SHA256SUMS</pre>
+        <button class="copy" type="button" data-copy="cmd-2">Copy</button>
+      </div>
+      <p>Already running Hemo? <code>hemo-verify</code> in the download folder does both checks with the key baked into the system.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap foot-in">
+    <span class="wm" role="img" aria-label="Hemo OS"></span>
+    <div>
+      <p>Hemo is a toolkit for authorized security work. Use its offensive capabilities only against systems you have explicit, written permission to test.</p>
+      <p>An independent project based on Kali Linux, not affiliated with or endorsed by OffSec. "Kali Linux" is a trademark of OffSec. Hemo's own files are GPL-3.0; each tool keeps its upstream license.</p>
+      <p><a href="docs/">Documentation</a> · <a href="https://github.com/cnmoseman/Hemo-OS" target="_blank" rel="noopener">Source</a></p>
+      <p>Built by Carter Moseman · <a href="../">cnmoseman.github.io</a></p>
+    </div>
+  </div>
+</footer>
+
+<script>
+const ROLES=[
+ {id:'red_team',short:'Red Team',name:'Red Team',fill:'#c41e2f',on:'#221d19',cream:'#c41e2f',dark:'#d6626d',n:94,
+  focus:'C2, post-exploitation, lateral movement, evasion and Active Directory compromise.',
+  grow:{"thrive": "Long engagements, quiet footholds, and someone else's network after dark.", "sow": "Deep and quiet. It sprouts best where nobody is watching.", "bloom": "An attack path the defenders didn't know they had.", "pair": ["pentest", "reverse"], "note": "Hardy perennial. Keep the noise pruned and it will outlast the night shift."},
+  tools:['metasploit-framework','mimikatz','ligolo-ng','chisel','evil-winrm','powershell-empire','hashcat','PEASS-ng']},
+ {id:'pentest',short:'Pentest',name:'Penetration Testing',fill:'#e0a93b',on:'#221d19',cream:'#866523',dark:'#e0a93b',n:127,
+  focus:'Generalist assessment across recon, AD, web, passwords and exploitation.',
+  grow:{"thrive": "Wide fields with a scope document and a deadline.", "sow": "Broadcast across the whole range, then thin out what doesn't take.", "bloom": "A findings report the client actually reads.", "pair": ["web", "vuln_assessor"], "note": "The workhorse of the garden. It takes root in almost any soil."},
+  tools:['nmap','burpsuite','netexec','bloodhound-ce','responder','certipy-ad','nuclei','ffuf']},
+ {id:'web',short:'Web & API',name:'Web & API Testing',fill:'#9b6dd6',on:'#221d19',cream:'#7f59af',dark:'#9d70d7',n:39,
+  focus:'Proxies, fuzzers, content discovery, injection and TLS checks for web and API work.',
+  grow:{"thrive": "Login pages, forgotten APIs, and anything with a query string.", "sow": "One input field at a time.", "bloom": "Proof that the form trusted you more than it should have.", "pair": ["pentest", "vuln_assessor"], "note": "A climber. Give it a URL and it finds a way up."},
+  tools:['burpsuite','caido','sqlmap','ffuf','nuclei','dalfox','jwt_tool','mitmproxy']},
+ {id:'vuln_assessor',short:'Vuln',name:'Vulnerability Assessment',fill:'#b5c23a',on:'#221d19',cream:'#697122',dark:'#b5c23a',n:15,
+  focus:'Authenticated and unauthenticated scanning, triage and reporting.',
+  grow:{"thrive": "Big estates that need a full survey, not a single dig.", "sow": "In tidy rows, on a schedule. Re-sow every season.", "bloom": "A ranked list of what to fix first.", "pair": ["pentest", "web"], "note": "Easy to grow, but someone still has to weed out the false positives."},
+  tools:['gvm','nuclei','trivy','grype','nikto','testssl.sh','zaproxy','legion']},
+ {id:'reverse',short:'Reverse',name:'Reverse Engineering',fill:'#d9763b',on:'#221d19',cream:'#a1572c',dark:'#d9763b',n:26,
+  focus:'Binaries, Android and Java, and recovered-artifact analysis.',
+  grow:{"thrive": "Stripped binaries, odd APKs, and files nobody can explain.", "sow": "Slowly. Read the seed before you plant it.", "bloom": "A plain answer to “what does this thing actually do?”", "pair": ["blue_host", "red_team"], "note": "Patient grower. It rewards the gardener who likes taking things apart."},
+  tools:['ghidra','radare2','pwndbg','frida','angr','jadx','apktool','yara']},
+ {id:'blue_host',short:'Blue Host',name:'Blue Team Host Analyst',fill:'#3a8ed0',on:'#221d19',cream:'#2d6fa2',dark:'#3a8ed0',n:29,
+  focus:'Host and endpoint DFIR: forensics, triage, malware and audit.',
+  grow:{"thrive": "Seized disks, memory images, and endpoints that started acting strange.", "sow": "After the incident, and only once the evidence is copied.", "bloom": "A minute-by-minute timeline of what happened.", "pair": ["blue_net", "reverse"], "note": "Keep the bed clean. Contaminated soil spoils the whole harvest."},
+  tools:['velociraptor','volatility3','hayabusa','chainsaw','capa','autopsy','plaso','yara']},
+ {id:'blue_net',short:'Blue Net',name:'Blue Team Network Analyst',fill:'#2bb3a3',on:'#221d19',cream:'#1c766c',dark:'#2bb3a3',n:15,
+  focus:'Network security monitoring: IDS, traffic and flow analysis.',
+  grow:{"thrive": "Busy wires, span ports, and captures measured in gigabytes.", "sow": "Along the edges, where the traffic crosses.", "bloom": "The conversation the attacker hoped nobody recorded.", "pair": ["blue_host", "vuln_assessor"], "note": "A quiet plant. It listens far more than it speaks."},
+  tools:['zeek','suricata','snort','tshark','termshark','tcpreplay','nfdump','networkminer']},
+ {id:'full',short:'Full Scope',name:'Full Scope',fill:'#8f9aa3',on:'#221d19',cream:'#646c72',dark:'#8f9aa3',n:null,
+  focus:"Every role's tools combined, for purple-team work and labs.",
+  grow:{"thrive": "Labs, training ranges, and purple-team exercises.", "sow": "Everything at once. Give it the biggest bed you have.", "bloom": "Both sides of the fight on one machine.", "pair": [], "note": "Plays well with every packet on the rack, because it already is every packet."},
+  tools:['metasploit-framework','nmap','burpsuite','ghidra','velociraptor','zeek','gvm','bloodhound-ce']}
+];
+const $=id=>document.getElementById(id);
+const reduce=matchMedia('(prefers-reduced-motion: reduce)');
+let selected='pentest';
+
+const slots=$('slots');
+ROLES.forEach(r=>{
+  const b=document.createElement('button');
+  b.className='pk';b.type='button';b.dataset.id=r.id;b.style.setProperty('--c',r.fill);b.style.setProperty('--on',r.on);
+  b.setAttribute('aria-pressed','false');
+  b.setAttribute('aria-label',r.name+(r.n?', '+r.n+' tools':', every tool'));
+  b.innerHTML=`<span class="flap" aria-hidden="true">Hemo OS</span><span class="face" aria-hidden="true"><span class="art"><img src="img/${r.id}-c.webp" alt="" loading="lazy"><span class="band">${r.short}</span></span><span class="yield"><small>Contains</small><b>${r.n?r.n+' tools':'every tool'}</b></span></span>`;
+  b.addEventListener('click',()=>select(r.id,true));
+  slots.appendChild(b);
+});
+
+function fill(r){
+  $('s-name').textContent=r.name;
+  $('s-tag').textContent=r.n?`A Hemo OS role kit · ${r.n} tools`:'A Hemo OS role kit · every role combined';
+  $('s-img').src=`img/${r.id}-c.webp`;
+  $('s-key').textContent=r.id;
+  $('s-focus').textContent=r.focus;
+  $('s-theme').innerHTML=`Make it primary with <code>hemo-theme ${r.id}</code>.`;
+  $('g-thrive').textContent=r.grow.thrive;$('g-sow').textContent=r.grow.sow;$('g-bloom').textContent=r.grow.bloom;
+  $('g-pair').innerHTML=r.grow.pair.length?r.grow.pair.map(id=>{const c=ROLES.find(x=>x.id===id);return `<button type="button" class="pair" data-open="${id}" style="--c:${c.fill}">${c.short}</button>`}).join(''):'Every packet on the rack';
+  $('g-note').textContent=r.grow.note;
+  $('s-tools').innerHTML=r.tools.map(t=>`<li>${t}</li>`).join('');
+  $('s-more').innerHTML=r.n
+    ? `<a href="docs/?role=${r.id}#tools">and ${r.n-r.tools.length} more &rarr;</a>`
+    : `<a href="docs/#tools">the full tool catalog &rarr;</a>`;
+  $('s-yield').textContent=r.n?r.n:'All';
+  $('s-yield-l').textContent=r.n?'tools in this packet':"of every role's tools";
+  const front=document.querySelector('.front .band');front.style.background=r.fill;front.style.color=r.on;
+}
+document.addEventListener('click',e=>{const b=e.target.closest('.pair');if(b){select(b.dataset.open,true);document.querySelector('.front .band').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'nearest'})}});
+function select(id,animate){
+  if(id===selected&&animate){syncSlots();return}
+  selected=id;
+  const r=ROLES.find(x=>x.id===id),sheet=$('sheet');
+  syncSlots();
+  if(animate&&!reduce.matches){
+    sheet.classList.add('turn');
+    setTimeout(()=>{fill(r);sheet.classList.remove('turn')},220);
+  }else fill(r);
+}
+function syncSlots(){slots.querySelectorAll('.pk').forEach(b=>{
+  b.setAttribute('aria-pressed',b.dataset.id===selected);
+})}
+document.querySelectorAll('[data-copy]').forEach(btn=>btn.addEventListener('click',()=>{
+  const pre=$(btn.dataset.copy),text=pre.textContent.replace(/^\$/,'').trim();
+  const done=()=>{btn.textContent='Copied';setTimeout(()=>btn.textContent='Copy',1600)};
+  const fallback=()=>{const r=document.createRange();r.selectNodeContents(pre);const s=getSelection();s.removeAllRanges();s.addRange(r);btn.textContent='Selected'};
+  try{navigator.clipboard.writeText(text).then(done,fallback)}catch(e){fallback()}
+}));
+select(selected,false);
+</script>
+<script>
+/* page-view counter (GoatCounter, no cookies), same account as the home page and trackers; live site only */
+if (location.hostname === "cnmoseman.github.io") {
+  var gc = document.createElement("script");
+  gc.async = true; gc.src = "https://cnmoseman.github.io/htb-study-trackers/assets/js/count.js";
+  gc.dataset.goatcounter = "https://cnmoseman.goatcounter.com/count";
+  document.head.appendChild(gc);
+}
+</script>
+</body>
+</html>
