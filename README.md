@@ -109,7 +109,6 @@ control center for roles, appearance, and setup.
 ## Repository layout
 
 ```
-install.sh                  Convert an existing Kali install in place (on hold).
 provision.sh                Hand-build path: turn a fresh Kali VM into Hemo.
 declutter.sh                Strip Kali's stock toolset (dry-run by default).
 build.sh                    Release pipeline: one rootfs, exported per VM format.
@@ -153,7 +152,7 @@ kept for reference but is not the release path.
 ## Status
 
 The first release, 0.1.0, is a VMware OVA. Hemo ships for VMware only; there are no
-qcow2 or VirtualBox images. Converting an existing Kali install in place (`install.sh`) is on hold.
+qcow2 or VirtualBox images.
 
 ## Scope and legal
 
