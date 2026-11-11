@@ -274,7 +274,7 @@ footer a:hover{color:var(--acc-dark)}
     <p class="lede">Hemo OS is a Kali-based operating system for security professionals, shipped as a ready-to-run VM image you rebuild for every engagement. Each role is a packet of tools, planted on first boot.</p>
 
     <div class="get" role="group" aria-label="Download an image">
-      <a href="https://github.com/cnmoseman/Hemo-OS/releases/latest"><b>VMware</b><span>OVA</span></a>
+      <a href="https://pub-2837a6191ae149fcb82eca0c04982e0a.r2.dev/hemo-0.1.0-vmware.ova"><b>VMware</b><span>OVA</span></a>
     </div>
     <p class="dl"><span>Log in as</span> <code>hemo</code> / <code>hemo</code><span> ·</span> <a href="#order">How to install</a></p>
 
@@ -391,13 +391,12 @@ footer a:hover{color:var(--acc-dark)}
     <div class="order">
       <h3>From a release image</h3>
       <ol>
-        <li>Download every part of the VMware image from the <a href="https://github.com/cnmoseman/Hemo-OS/releases/latest">latest release</a>. Each image comes in pieces (<code>.7z.001</code>, <code>.7z.002</code>, &hellip;) so every file stays under GitHub's size limit.</li>
-        <li>Extract it: open the <code>.001</code> file with <a href="https://www.7-zip.org/">7-Zip</a> on Windows, or run <code>7z x</code> on it on Linux or macOS. The other parts are picked up automatically.</li>
+        <li>Download the <a href="https://pub-2837a6191ae149fcb82eca0c04982e0a.r2.dev/hemo-0.1.0-vmware.ova">VMware image</a>: one <code>.ova</code> file, about 5&nbsp;GB.</li>
         <li>Import and boot: open the <code>.ova</code> in VMware Workstation, Player or Fusion.</li>
         <li>Log in as <code>hemo</code> with the password <code>hemo</code>, and change it with <code>passwd</code> when you're ready. Hemo Welcome opens so you can plant your roles.</li>
       </ol>
       <h3 class="verify-h">Check the download</h3>
-      <p>Every release is signed. With <code>SHA256SUMS</code>, <code>SHA256SUMS.minisig</code> and <code>hemo-release.pub</code> from the release next to your parts, run:</p>
+      <p>Every release is signed. Put <code>SHA256SUMS</code>, <code>SHA256SUMS.minisig</code> and <code>hemo-release.pub</code> from the <a href="https://github.com/cnmoseman/hemo-os/releases/latest">latest release</a> next to the <code>.ova</code>, then run:</p>
       <div class="slip">
         <pre id="cmd-2"><b aria-hidden="true">$</b>minisign -Vm SHA256SUMS -p hemo-release.pub &amp;&amp; sha256sum -c --ignore-missing SHA256SUMS</pre>
         <button class="copy" type="button" data-copy="cmd-2">Copy</button>
