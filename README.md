@@ -135,7 +135,7 @@ PLAN.md, RUNBOOK.md         Design doc and hand-build runbook.
 
 Releases are built by hand in VMware:
 provision a stock Kali VMware VM with `provision.sh`, declutter it, apply the golden
-config, seal it offline from a Kali Live ISO, export the OVA, then pack and sign it
+config, seal it offline from a Kali Live ISO, export the OVA, then check, sign and upload it
 with `scripts/hemo-release-pack.sh`. Hemo ships for VMware only.
 
 `build.sh` (Kali's `kali-vm` pipeline, which needs a Linux host with `/dev/kvm`) is

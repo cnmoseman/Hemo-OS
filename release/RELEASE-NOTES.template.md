@@ -1,66 +1,95 @@
-<!-- Fill in the <...> fields. Keep the verify block verbatim. -->
-# Hemo OS <version> — VMware OVA
+<!-- Template. scripts/hemo-release-pack.sh fills the double-brace placeholders
+     (version, file name, download URL, size, sha256), drops this comment, and writes
+     RELEASE-NOTES-<version>.md next to the release files. Then write "What's new" by hand. -->
+# Hemo OS {{VERSION}} — VMware OVA
 
-A curated, durable Kali-based pentest/red-team distro. VM-first, i3 on X11. Thin
-baked core; per-role online tool install via Hemo Welcome.
+**Hemo OS** is a curated, durable Kali-based pentest / red-team distro. VM-first,
+i3 on X11, a thin baked core — the heavy tooling installs per role, online, the
+first time you need it, so the image stays small and current instead of shipping
+a stale everything-bundle.
+
+## What's new
+
+- <change>
 
 ## Download
 
-The OVA is split into 7-Zip volumes under 2 GiB (GitHub's per-file limit).
-Download **every** `.7z.0NN` part plus `SHA256SUMS`, `SHA256SUMS.minisig`, and
-`hemo-release.pub` into one folder.
+**[{{OVA}}]({{URL}})** (one file, {{SIZE}}). It's hosted outside GitHub because
+GitHub caps release files at 2 GiB. Import it as is; there's nothing to extract.
 
-| File | Notes |
+To check it, download these files from this release into the same folder:
+
+| File | What it is |
 | --- | --- |
-| `hemo-<version>-vmware.ova.7z.001` … | the image, split |
-| `SHA256SUMS` | checksums of the parts |
+| `SHA256SUMS` | checksum of the `.ova` |
 | `SHA256SUMS.minisig` | minisign signature over `SHA256SUMS` |
-| `hemo-release.pub` | public key (also below) |
+| `hemo-release.pub` | the public key (also printed below) |
 
-## Verify, then unpack
-
-Already on a Hemo system? One command checks the signature and the checksums:
+## Verify
 
 ```sh
-hemo-verify          # run it in the download folder
+minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c SHA256SUMS
 ```
 
-On any machine (the key is published below and fingerprinted
-`RWQzpPBysI/5LuAT3QYSxApS/ZTU2xbJKyqrzgvfLSi6N3RlPJeQvoC8`,
-id `2EF98FB072F0A433`):
+On Hemo 0.1.1 or later, `hemo-verify` in the download folder does the same check
+with the key built into the system. (0.1.0 has an older key built in, so use the
+`minisign` line above there.)
 
-```sh
-minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c --ignore-missing SHA256SUMS
-7z x hemo-<version>-vmware.ova.7z.001        # reassembles + extracts the .ova
-```
-
-`minisign` ships in Kali and most distro repos (it is baked into Hemo). Verify
-the signature **before** trusting the `hemo-release.pub` in the download — compare
-its id above against a copy you already trust. The public key for this and all
-Hemo releases:
+`minisign` ships in Kali and most distro repos (`apt-get install minisign`). The
+public key for Hemo OS releases (id `2EF98FB072F0A433`):
 
 ```
-<paste contents of release/hemo-release.pub here>
+RWQzpPBysI/5LuAT3QYSxApS/ZTU2xbJKyqrzgvfLSi6N3RlPJeQvoC8
 ```
 
-## First boot
+## Import and first boot
 
-Import the `.ova` in VMware Workstation/Player. Log in as **`hemo`** / **`hemo`**
-(no forced change). i3 starts and Hemo Welcome opens — pick your roles to install
-tools. The image ships with no network ports listening; change the password
-before exposing it.
+Import `{{OVA}}` in VMware Workstation, Player or Fusion
+(*File → Open → the .ova*). Log in as:
+
+- **Username:** `hemo`
+- **Password:** `hemo`
+
+No forced password change — it behaves like Kali. i3 starts and **Hemo Welcome**
+opens. Pick your roles there and it installs that role's tools online.
+
+> The password is public and permanent until you change it, so the image ships
+> with **no network ports listening** (SSH is disabled). Change the password
+> before you put the VM on any network you don't control.
 
 ## What's in it
 
-- Thin baked core: i3 + X11 desktop, Hemo Welcome, the `hemo-*` helpers, the
-  theming and role tooling. Full tool sets install per role, online, on first use.
-- OS identifies as "Hemo OS (Kali Rolling)".
-- Baseline package list attached (`<pkglist filename>`).
+A thin baked core — i3 + X11 desktop, Hemo Welcome, the `hemo-*` helpers, the
+role theming, and the package tooling. Full tool sets install per role, on
+demand, through Hemo Welcome. The roles:
 
-## Checksums
+| Role | For |
+| --- | --- |
+| **Red Team** | C2, post-exploitation, lateral movement, evasion, AD compromise |
+| **Penetration Testing** | Generalist assessment — recon, AD, web, passwords, exploitation |
+| **Web** | Web and API application testing |
+| **Vulnerability Assessor** | Authenticated / unauth scanning, triage, reporting |
+| **Reverse** | Binary, Android/Java, and loot analysis — Ghidra, debuggers, more |
+| **Blue Host Analyst** | Host / endpoint DFIR — forensics, triage, malware analysis |
+| **Blue Net Analyst** | Network security monitoring — IDS, traffic + flow analysis |
+| **Full Scope** | Every role's tools — the batteries-included purple build |
 
-Raw image (pre-pack):
+Install a role from Hemo Welcome, or from a terminal:
+
+```sh
+sudo hemo-pkg install-role red_team      # list-roles shows them all
+```
+
+## Notes
+
+- **Format:** VMware OVA, for VMware Workstation, Player, and Fusion. Hemo ships
+  for VMware only.
+- **Updates:** it's Kali Rolling underneath — `sudo apt update && sudo apt
+  full-upgrade` keeps the base current; re-run a role in Hemo Welcome to pull new
+  tool versions.
+
+## Checksum
 
 ```
-<contents of hemo-<version>-vmware.ova.sha256>
+{{SHA256}}  {{OVA}}
 ```

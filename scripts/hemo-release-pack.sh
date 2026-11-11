@@ -1,32 +1,36 @@
 #!/usr/bin/env bash
-# hemo-release-pack.sh — package, checksum and sign a release OVA.
+# hemo-release-pack.sh — package an approved OVA for release.
 #
-# Takes one approved raw image (the .ova that passed its import test) and produces
-# a release/ directory ready for upload:
+# Hemo ships one .ova, hosted on Cloudflare R2 (GitHub caps release files at
+# 2 GiB). The GitHub release carries only the small files that let people check
+# the download. Given hemo-<version>-vmware.ova, this writes to --outdir:
 #
-#   <name>.ova.sha256        raw-image checksum, taken BEFORE packing
-#   <name>.ova.7z.001 ...    7-Zip split volumes, each < 2 GiB (GitHub's limit)
-#   SHA256SUMS               checksums of the published .7z.* parts
+#   SHA256SUMS               one line: the .ova's checksum
 #   SHA256SUMS.minisig       minisign signature over SHA256SUMS
-#   hemo-release.pub         the public key (copied in for convenience)
+#   hemo-release.pub         the public key
+#   RELEASE-NOTES-<ver>.md   release/RELEASE-NOTES.template.md, filled in
 #
-# It round-trips the split back to the raw image's pre-pack hash, so the
-# published parts provably reconstruct exactly what was tested, and it verifies
-# the signature it just made with the committed public key.
+# Steps, each optional where noted:
+#   --audit    read-only look inside the OVA's disk, without importing or
+#              mounting it: is the release key built in the current one, is the
+#              machine-id 'uninitialized', is the hostname hemo, are there extra
+#              home dirs? Needs qemu-utils and e2fsprogs; no root needed.
+#   sign       minisign prompts for the key password, so run it in a real
+#              terminal. --no-sign skips signing and prints the command to run later.
+#   --upload   aws s3 cp to R2 (awscli profile 'r2'), then fetch the PUBLIC URL
+#              and check its size and sha256 against the local file.
 #
-# It NEVER uploads, tags, or touches GitHub — the owner approves and uploads
-# (docs/golden-image.md step 7). The minisign SECRET key never lives in the
-# repo: pass it with --seckey or $HEMO_MINISIGN_SECKEY (default
-# ~/.minisign/hemo-release.key). minisign prompts for its password itself.
+# It never pushes, tags, or creates the GitHub release; the owner does that.
+# The minisign SECRET key never lives in the repo.
 set -euo pipefail
 
 PROG=${0##*/}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
-PART_SIZE=1900m          # 7z split volume size; keeps each part < 2 GiB
-LEVEL=9                  # 7z compression level
-TWO_GIB=2147483648       # hard per-file ceiling (2 * 1024^3)
+BUCKET=hemo-os
+PROFILE=r2
+PUBLIC_BASE=https://pub-2837a6191ae149fcb82eca0c04982e0a.r2.dev
 
 die()  { printf '%s: error: %s\n' "$PROG" "$*" >&2; exit 1; }
 note() { printf '>> %s\n' "$*" >&2; }
@@ -35,125 +39,174 @@ usage() {
   cat >&2 <<EOF
 Usage: $PROG --ova PATH [options]
 
-  --ova PATH        the approved raw image to package (required)
-  --outdir DIR      where to write the release files
-                    (default: <ova-dir>/release)
-  --seckey PATH     minisign secret key
-                    (default: \$HEMO_MINISIGN_SECKEY or ~/.minisign/hemo-release.key)
-  --pubkey PATH     minisign public key, for the post-sign verify and to copy in
-                    (default: $REPO_DIR/release/hemo-release.pub)
-  --pkglist PATH    baseline package list to include in the release (optional)
-  --no-sign         pack + checksum + round-trip only; skip minisign
-  -h, --help        this help
+  --ova PATH          the approved image, named hemo-<version>-vmware.ova (required)
+  --outdir DIR        where to write the release files (default: <ova-dir>/release-<version>)
+  --audit             read-only check of the OVA's disk before anything else
+  --no-sign           skip minisign (prints the command to sign later)
+  --upload            upload to R2 and verify the public URL
+  --seckey PATH       minisign secret key (default: \$HEMO_MINISIGN_SECKEY or ~/.minisign/hemo-release.key)
+  --pubkey PATH       public key (default: $REPO_DIR/release/hemo-release.pub)
+  --bucket NAME       R2 bucket (default: $BUCKET)
+  --profile NAME      awscli profile for R2 (default: $PROFILE)
+  --public-base URL   public bucket URL (default: $PUBLIC_BASE)
+  -h, --help          this help
 
-Example:
-  $PROG --ova ~/hemo-release/hemo-0.1.0-vmware.ova
+Typical release:
+  $PROG --ova ~/hemo-release/hemo-0.1.1-vmware.ova --audit --no-sign   # check + sums + notes
+  # owner, in a real terminal:  minisign -S -s ~/.minisign/hemo-release.key -m <outdir>/SHA256SUMS
+  $PROG --ova ~/hemo-release/hemo-0.1.1-vmware.ova --no-sign --upload  # verifies the signature, uploads
 EOF
 }
 
-ova=""
-outdir=""
+ova="" outdir="" audit=0 do_sign=1 upload=0
 seckey=${HEMO_MINISIGN_SECKEY:-$HOME/.minisign/hemo-release.key}
 pubkey="$REPO_DIR/release/hemo-release.pub"
-pkglist=""
-do_sign=1
 
 while [ $# -gt 0 ]; do
   case $1 in
-    --ova)     ova=${2:?--ova needs a path}; shift 2 ;;
-    --outdir)  outdir=${2:?--outdir needs a path}; shift 2 ;;
-    --seckey)  seckey=${2:?--seckey needs a path}; shift 2 ;;
-    --pubkey)  pubkey=${2:?--pubkey needs a path}; shift 2 ;;
-    --pkglist) pkglist=${2:?--pkglist needs a path}; shift 2 ;;
-    --no-sign) do_sign=0; shift ;;
-    -h|--help) usage; exit 0 ;;
+    --ova)         ova=${2:?--ova needs a path}; shift 2 ;;
+    --outdir)      outdir=${2:?--outdir needs a path}; shift 2 ;;
+    --audit)       audit=1; shift ;;
+    --no-sign)     do_sign=0; shift ;;
+    --upload)      upload=1; shift ;;
+    --seckey)      seckey=${2:?}; shift 2 ;;
+    --pubkey)      pubkey=${2:?}; shift 2 ;;
+    --bucket)      BUCKET=${2:?}; shift 2 ;;
+    --profile)     PROFILE=${2:?}; shift 2 ;;
+    --public-base) PUBLIC_BASE=${2:?}; shift 2 ;;
+    -h|--help)     usage; exit 0 ;;
     *) usage; die "unknown argument: $1" ;;
   esac
 done
 
 [ -n "$ova" ] || { usage; die "--ova is required"; }
 [ -f "$ova" ] || die "ova not found: $ova"
-
-command -v 7z       >/dev/null 2>&1 || die "7z not found (apt-get install p7zip-full)"
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found"
-if [ "$do_sign" -eq 1 ]; then
-  command -v minisign >/dev/null 2>&1 || die "minisign not found (apt-get install minisign); or re-run with --no-sign"
-  [ -f "$seckey" ] || die "minisign secret key not found: $seckey (set --seckey or \$HEMO_MINISIGN_SECKEY)"
-fi
-
-ova=$(cd -- "$(dirname -- "$ova")" && pwd)/$(basename -- "$ova")   # absolutise
+[ -f "$pubkey" ] || die "public key not found: $pubkey"
+ova=$(cd -- "$(dirname -- "$ova")" && pwd)/$(basename -- "$ova")
 base=$(basename -- "$ova")
-[ -n "$outdir" ] || outdir=$(dirname -- "$ova")/release
+[[ $base =~ ^hemo-([0-9]+\.[0-9]+\.[0-9]+)-vmware\.ova$ ]] || die "name must be hemo-<x.y.z>-vmware.ova (got $base)"
+version=${BASH_REMATCH[1]}
+[ -n "$outdir" ] || outdir=$(dirname -- "$ova")/release-$version
 mkdir -p -- "$outdir"
 outdir=$(cd -- "$outdir" && pwd)
+url="$PUBLIC_BASE/$base"
+size=$(stat -c %s -- "$ova")
 
-note "image:   $ova"
+note "image:   $ova ($size bytes)"
+note "version: $version"
 note "outdir:  $outdir"
 
-# 1. pre-pack checksum of the raw image --------------------------------------
-note "hashing raw image (pre-pack)..."
-pre=$(sha256sum -- "$ova" | awk '{print $1}')
-printf '%s  %s\n' "$pre" "$base" > "$outdir/$base.sha256"
-note "pre-pack sha256: $pre"
+# 1. read-only audit ----------------------------------------------------------
+audit_disk() {
+  local t tool
+  for tool in qemu-storage-daemon debugfs sfdisk tar; do
+    command -v "$tool" >/dev/null 2>&1 || die "--audit needs $tool (apt-get install qemu-utils e2fsprogs fdisk)"
+  done
+  t=$(mktemp -d)
+  # The disk is the tar member ending in .vmdk; its data starts one 512-byte
+  # header after the block number tar reports.
+  local blk vsize off start dev pid
+  read -r blk vsize < <(tar tvf "$ova" --block-number | awk '/\.vmdk$/{gsub(":","",$2); print $2, $5; exit}')
+  [ -n "${blk:-}" ] || die "no .vmdk inside $base"
+  off=$(( (blk + 1) * 512 ))
+  : > "$t/disk.raw"
+  qemu-storage-daemon \
+    --blockdev "{\"node-name\":\"d\",\"driver\":\"vmdk\",\"read-only\":true,\"file\":{\"driver\":\"raw\",\"offset\":$off,\"size\":$vsize,\"read-only\":true,\"file\":{\"driver\":\"file\",\"filename\":\"$ova\",\"read-only\":true}}}" \
+    --export "type=fuse,id=e,node-name=d,mountpoint=$t/disk.raw,writable=off" \
+    --daemonize --pidfile "$t/qsd.pid" 2>/dev/null || die "could not open the disk image"
+  pid=$(cat "$t/qsd.pid")
+  # shellcheck disable=SC2064
+  trap "kill $pid 2>/dev/null; sleep 1; rm -rf '$t'" EXIT
+  start=$(sfdisk -d "$t/disk.raw" 2>/dev/null | awk -F'[=,]' '/start=/{gsub(/ /,"",$2); print $2; exit}')
+  [ -n "$start" ] || die "no partition table found on the disk"
+  dev="$t/disk.raw?offset=$(( start * 512 ))"
+  dcat() { debugfs -R "cat $1" "$dev" 2>/dev/null; }
 
-# 2. 7-Zip split --------------------------------------------------------------
-rm -f -- "$outdir/$base".7z.*          # clear any stale parts
-note "packing split volumes ($PART_SIZE, -mx=$LEVEL)..."
-7z a -t7z -mx="$LEVEL" -v"$PART_SIZE" -bso0 -bsp0 -- "$outdir/$base.7z" "$ova"
-
-shopt -s nullglob
-parts=( "$outdir/$base".7z.[0-9][0-9][0-9] )
-shopt -u nullglob
-[ ${#parts[@]} -gt 0 ] || die "7z produced no .7z.NNN volumes"
-note "produced ${#parts[@]} volume(s)"
-
-# 3. size ceiling -------------------------------------------------------------
-for p in "${parts[@]}"; do
-  sz=$(stat -c %s -- "$p")
-  [ "$sz" -lt "$TWO_GIB" ] || die "part exceeds 2 GiB: $(basename -- "$p") ($sz bytes)"
-done
-note "all parts < 2 GiB: ok"
-
-# 4. round-trip: reconstruct and compare to the pre-pack hash -----------------
-note "round-tripping split -> sha256 (must equal pre-pack)..."
-post=$(7z x -so -- "$outdir/$base.7z.001" 2>/dev/null | sha256sum | awk '{print $1}')
-[ "$post" = "$pre" ] || die "round-trip mismatch: parts reconstruct to $post, not $pre"
-note "round-trip sha256: $post (matches)"
-
-# 5. SHA256SUMS over the published parts (relative names) ---------------------
-( cd -- "$outdir" && sha256sum "$base".7z.[0-9][0-9][0-9] > SHA256SUMS )
-note "wrote SHA256SUMS over ${#parts[@]} part(s)"
-
-# 6. baseline package list (optional) ----------------------------------------
-if [ -n "$pkglist" ]; then
-  [ -f "$pkglist" ] || die "pkglist not found: $pkglist"
-  cp -- "$pkglist" "$outdir/"
-  note "included package list: $(basename -- "$pkglist")"
-fi
-
-# 7. sign + verify ------------------------------------------------------------
-if [ "$do_sign" -eq 1 ]; then
-  note "signing SHA256SUMS with minisign (you'll be prompted for the key password)..."
-  ( cd -- "$outdir" && minisign -S -s "$seckey" -m SHA256SUMS )
-  if [ -f "$pubkey" ]; then
-    note "verifying signature with $pubkey ..."
-    ( cd -- "$outdir" && minisign -Vm SHA256SUMS -p "$pubkey" )
-    cp -- "$pubkey" "$outdir/hemo-release.pub"
-    note "verify: ok"
+  local bad=0 mid host homes
+  if [ "$(dcat /usr/share/hemo/hemo-release.pub)" = "$(cat "$pubkey")" ]; then
+    note "audit: built-in release key matches $pubkey: ok"
   else
-    note "WARNING: public key not found at $pubkey — signature made but NOT verified."
-    note "         commit the matching hemo-release.pub to release/ and verify before upload."
+    note "audit: FAIL built-in /usr/share/hemo/hemo-release.pub differs from $pubkey"; bad=1
   fi
+  mid=$(dcat /etc/machine-id | tr -d '\n')
+  [ "$mid" = uninitialized ] && note "audit: machine-id uninitialized: ok" \
+    || { note "audit: FAIL machine-id is '$mid' (should be 'uninitialized')"; bad=1; }
+  host=$(dcat /etc/hostname | tr -d '\n')
+  [ "$host" = hemo ] && note "audit: hostname hemo: ok" || { note "audit: FAIL hostname is '$host'"; bad=1; }
+  homes=$(debugfs -R "ls /home" "$dev" 2>/dev/null | tr -s ' ' '\n' | grep -vxE '|\.|\.\.|[0-9]+|\([0-9]+\)' | tr '\n' ' ')
+  [ "$homes" = "hemo " ] && note "audit: /home has only hemo: ok" || { note "audit: FAIL /home has: $homes"; bad=1; }
+  dcat /etc/apt/apt.conf.d/90hemo-lock-timeout | grep -q 'Lock::Timeout' \
+    && note "audit: apt lock timeout present: ok" || { note "audit: FAIL 90hemo-lock-timeout missing"; bad=1; }
+
+  kill "$pid" 2>/dev/null; sleep 1; rm -rf "$t"; trap - EXIT
+  [ "$bad" -eq 0 ] || die "audit failed; fix the image before releasing it"
+}
+[ "$audit" -eq 1 ] && audit_disk
+
+# 2. checksum -------------------------------------------------------------------
+sums="$outdir/SHA256SUMS"
+if [ -f "$sums" ] && [ "$(awk '{print $2}' "$sums")" = "$base" ] && [ -f "$sums.minisig" ]; then
+  note "reusing existing SHA256SUMS (already signed)"
+  sha=$(awk '{print $1}' "$sums")
+  ( cd -- "$(dirname -- "$ova")" && sha256sum -c --status "$sums" ) || die "the .ova no longer matches the signed SHA256SUMS"
 else
-  note "skipped signing (--no-sign)"
+  note "hashing image..."
+  sha=$(sha256sum -- "$ova" | awk '{print $1}')
+  printf '%s  %s\n' "$sha" "$base" > "$sums"
+  rm -f -- "$sums.minisig"
+fi
+note "sha256: $sha"
+cp -- "$pubkey" "$outdir/hemo-release.pub"
+
+# 3. sign + verify ----------------------------------------------------------------
+if [ ! -f "$sums.minisig" ]; then
+  if [ "$do_sign" -eq 1 ]; then
+    command -v minisign >/dev/null 2>&1 || die "minisign not found (apt-get install minisign)"
+    [ -f "$seckey" ] || die "secret key not found: $seckey"
+    [ -t 0 ] || die "signing needs a real terminal for the password; run it there, or use --no-sign"
+    note "signing (enter the key password)..."
+    minisign -S -s "$seckey" -m "$sums"
+  else
+    note "not signed yet. In a real terminal run:"
+    echo "     minisign -S -s $seckey -m $sums" >&2
+  fi
+fi
+if [ -f "$sums.minisig" ]; then
+  minisign -Vm "$sums" -p "$pubkey" >/dev/null || die "signature does NOT verify with $pubkey"
+  note "signature verifies with $pubkey: ok"
 fi
 
-# 8. manifest -----------------------------------------------------------------
+# 4. release notes ------------------------------------------------------------------
+tmpl="$REPO_DIR/release/RELEASE-NOTES.template.md"
+notes="$outdir/RELEASE-NOTES-$version.md"
+if [ -f "$tmpl" ] && [ ! -f "$notes" ]; then
+  human=$(awk -v b="$size" 'BEGIN{printf "%.1f GB", b/1e9}')
+  sed -e '1,/-->\s*$/d' -e "s|{{VERSION}}|$version|g" -e "s|{{OVA}}|$base|g" -e "s|{{URL}}|$url|g" \
+      -e "s|{{SIZE}}|$human|g" -e "s|{{SHA256}}|$sha|g" "$tmpl" > "$notes"
+  note "wrote $notes (fill in What's new)"
+fi
+
+# 5. upload + public check ----------------------------------------------------------
+if [ "$upload" -eq 1 ]; then
+  [ -f "$sums.minisig" ] || die "refusing to upload before SHA256SUMS is signed"
+  command -v aws >/dev/null 2>&1 || die "aws not found (apt-get install awscli)"
+  note "uploading to s3://$BUCKET/$base (profile $PROFILE)..."
+  aws s3 cp "$ova" "s3://$BUCKET/$base" --profile "$PROFILE" \
+    --content-type application/octet-stream --only-show-errors
+  note "checking the public URL..."
+  len=$(curl -sfI "$url" | awk 'tolower($1)=="content-length:"{print $2}' | tr -d '\r')
+  [ "$len" = "$size" ] || die "public URL size is '${len:-none}', expected $size: $url"
+  pub=$(curl -sf "$url" | sha256sum | awk '{print $1}')
+  [ "$pub" = "$sha" ] || die "public download hashes to $pub, expected $sha"
+  note "public download matches: ok"
+fi
+
+# 6. summary ------------------------------------------------------------------------
 echo >&2
-note "release files in $outdir:"
-( cd -- "$outdir" && ls -1 ) | sed 's/^/     /' >&2
-echo >&2
-note "user verify one-liner (put in the release notes):"
-echo "     minisign -Vm SHA256SUMS -p hemo-release.pub && sha256sum -c --ignore-missing SHA256SUMS" >&2
-echo >&2
-note "done. Nothing was uploaded — the owner approves and uploads (docs/golden-image.md step 7)."
+note "download URL (site button + docs): $url"
+note "attach to the GitHub release v$version:"
+for f in SHA256SUMS SHA256SUMS.minisig hemo-release.pub; do
+  [ -f "$outdir/$f" ] && echo "     $outdir/$f" >&2 || echo "     $outdir/$f  (MISSING)" >&2
+done
+note "release body: $notes"
+note "nothing was pushed; the owner pushes and publishes."

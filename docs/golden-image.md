@@ -95,11 +95,13 @@ Steps, with what is new:
    - Nothing is listening on the network.
    Then delete the copies.
 
-7. **Release.** `SHA256SUMS` plus a signature (minisign or GPG), and the baseline package
-   list. Then confirm the published files match the checksums taken before testing.
-   Every image is packed as **7-Zip split volumes under 2 GiB each** (`.7z.001`,
-   `.7z.002`, …) for GitHub's per-file limit (owner decision 2026-10-13: "zip it"). The
-   checksums cover the raw images (pre-test) and the `.7z.*` parts (published).
+7. **Release.** `scripts/hemo-release-pack.sh` checks the OVA's disk read-only (`--audit`),
+   writes a one-line `SHA256SUMS` for the `.ova`, verifies the minisign signature, fills in
+   the release notes, and (`--upload`) uploads the `.ova` to Cloudflare R2. It then
+   downloads the public URL back and confirms the checksum. The `.ova` ships as one file
+   from R2, because GitHub caps release files at 2 GiB (decided 2026-11-11; this replaces the
+   2026-10-13 7-Zip split). The GitHub release carries `SHA256SUMS`, its signature, and the
+   public key.
 
 ## The first login
 
@@ -115,7 +117,7 @@ checks this.
 2. **First login:** like Kali. Password `hemo`, no forced change.
 3. **Signing:** minisign (small keys, one-line verify). `SHA256SUMS` plus
    `SHA256SUMS.minisig`, and the public key in the repo and the release notes.
-4. **Hosting:** 7-Zip split volumes under 2 GiB on GitHub releases.
+4. **Hosting:** one `.ova` on Cloudflare R2; the signed sums go on the GitHub release (2026-11-11).
 
 ## Work items
 

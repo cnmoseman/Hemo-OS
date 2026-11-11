@@ -25,7 +25,7 @@ _hp_test.py
 # Only release/hemo-release.pub (the public key) belongs in the repo.
 *.key
 release/hemo-release.key
-# Release build artifacts (split volumes, checksums, signatures) are uploaded,
+# Release build artifacts (images, checksums, signatures) are uploaded,
 # not committed.
 /release/*.7z.*
 /release/SHA256SUMS

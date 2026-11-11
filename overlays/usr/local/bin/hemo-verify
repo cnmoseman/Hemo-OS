@@ -7,8 +7,6 @@
 #   hemo-verify [dir]     dir holding SHA256SUMS, SHA256SUMS.minisig and the
 #                         release files (default: current directory)
 #
-# After this passes, reassemble the image and check it against its own
-# <name>.ova.sha256 (see the release notes).
 set -u
 
 DIR="${1:-$PWD}"
