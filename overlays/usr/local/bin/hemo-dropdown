@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# hemo-dropdown — $mod+` : a drop-down terminal that slides over whatever you're
+# doing. First press starts it; later presses show / hide the same terminal
+# (it lives in the i3 scratchpad, so its shell and history survive).
+# Floating rule: config.d/hemo-windows.conf; size + centring are set below.
+
+if i3-msg -t get_tree | grep -q '"class":"hemo-dropdown"'; then
+    exec i3-msg -q '[class="^hemo-dropdown$"] scratchpad show'
+else
+    kitty --class hemo-dropdown &
+    # kitty sizes itself after mapping (kitty.conf's fixed cell size), which
+    # overrides the rule's resize — so re-apply size + position once it exists
+    for _ in $(seq 40); do
+        sleep 0.05
+        i3-msg -t get_tree | grep -q '"class":"hemo-dropdown"' && break
+    done
+    sleep 0.15
+    i3-msg -q '[class="^hemo-dropdown$"] resize set 80 ppt 45 ppt'
+    # centre it under the bar at whatever width it got (floating_maximum_size
+    # in hemo-windows.conf can cap the 80%)
+    sw=$(i3-msg -t get_workspaces | python3 -c 'import json,sys; print([w for w in json.load(sys.stdin) if w["focused"]][0]["rect"]["width"])')
+    ww=$(xdotool search --onlyvisible --class hemo-dropdown getwindowgeometry --shell | sed -n 's/^WIDTH=//p' | head -1)
+    [ -n "$sw" ] && [ -n "$ww" ] && i3-msg -q "[class=\"^hemo-dropdown\$\"] move position $(( (sw - ww) / 2 )) px 42 px"
+fi

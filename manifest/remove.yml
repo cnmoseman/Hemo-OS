@@ -1,0 +1,55 @@
+# Hemo — packages purged from the base after build (kali-vm pipeline).
+#
+# Consumed by scripts/hemo-customize.sh: `apt-get purge -y <purge>` then
+# autoremove. kali-vm is run with `-T none` (no toolset metapackage) and the
+# i3 desktop (kali-desktop-i3), so the image never installs the stock attack
+# toolset — there is nothing here to strip for that. What a `-T none` i3 build
+# CAN still pull in is the XFCE desktop (via kali-desktop-xfce / dependencies)
+# and a few demo apps; that is what this list removes so the image is pure i3.
+#
+# SCOPE NOTE: the tool-metapackage stripping (kali-linux-default / -headless /
+# -tools-top10 / -system-gui) belongs to the hand-build path and lives in
+# `declutter.sh` — that path installs the toolset, this one does not. Roles
+# reinstall tools online either way (manifest/roles.yml).
+#
+# SAFETY: every name below is a real Kali package, so `apt-get purge` skips it
+# cleanly if the build didn't install it. kali-desktop-i3 depends on
+# xfce4-power-manager and qt5ct/qt6ct, so those are deliberately NOT listed and
+# stay. Verify on a CLEAN kali-vm build image before trusting this end-to-end.
+
+# Top-level XFCE packages + leaf apps only. The deeper XFCE libs/plugins
+# (xfconf, xfce4-settings, xfdesktop4, xfce4-panel, …) are intentionally NOT
+# listed: hemo-customize runs `apt-get autoremove --purge` right after this, and
+# letting autoremove sweep them (rather than naming them) avoids dragging out a
+# shared-library sibling such as thunar or xfce4-power-manager. (Same reasoning
+# as declutter.sh's EXTRA list.)
+purge:
+  # XFCE desktop (Hemo is pure i3; the greeter is lightdm-gtk-greeter)
+  - kali-desktop-xfce
+  - kali-undercover          # Windows-look disguise mode (pulls xfce4)
+  - xfce4
+  - xfce4-session
+  - xfwm4
+  - xfce4-notifyd
+  - xfce4-screensaver
+  - xfce4-taskmanager
+  - xfce4-screenshooter
+  # XFCE bundled apps Hemo replaces (thunar/zathura/nsxiv/kitty/flameshot stay)
+  - mousepad
+  - ristretto
+  - parole
+  - atril
+  - engrampa
+  - mate-calc
+  - catfish
+  # accessibility / on-screen-keyboard stack pulled by kali-desktop-xfce
+  - orca
+  - onboard
+  - speech-dispatcher
+  # demo games + screensaver
+  - gnome-games
+  - aisleriot
+  - gnome-mahjongg
+  - gnome-mines
+  - gnome-sudoku
+  - xscreensaver

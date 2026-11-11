@@ -1,0 +1,452 @@
+# Hemo — apt packages (from the Kali repo), grouped by purpose.
+# Package names are Kali/Debian names; a few are flagged where the binary
+# or package name differs from the tool's common name.
+#
+# BAKED vs CATALOG (role-install model, 2026-10-02): only `base` + `desktop_i3`
+# + `desktop_apps` + `plumbing` + `runtime` + `hardening` + `branding` are baked
+# into the image via kali-vm -P (see build.sh, which reads exactly these
+# sections). Every other section is a CATALOG the first-boot role installer draws
+# from (see roles.yml); those tools install ONLINE when a role is selected.
+
+base:
+  - build-essential       # toolchain/headers so source-built pipx wheels (lxml, crypto…) compile
+  - python3-dev
+  - libxml2-dev
+  - libxslt1-dev
+  - libssl-dev
+  - libffi-dev
+  - pkg-config
+  - cargo
+  - zsh
+  - zsh-autosuggestions    # grey history ghost-text, accept with → (Kali default; lost when Hemo replaced .zshrc)
+  - zsh-syntax-highlighting # live green/red command highlighting (Kali default)
+  - powershell             # pwsh: the $mod+Shift+Return terminal (hemo-pwsh); base on every system
+  - goshs                  # quick file-transfer server (hemo-serve): HTTP/HTTPS/WebDAV/SMB + upload
+  - minisign               # verify release downloads (hemo-verify)
+  - nano                   # default $EDITOR + root/visudo; setup can switch $EDITOR to vim (= Neovim)
+  - tmux
+  - fzf
+  - ripgrep
+  - bat            # binary is `batcat`
+  - fd-find        # binary is `fdfind`
+  - git
+  - pipx
+  - golang         # Go toolchain for the go-installed tools in extra.yml
+  - curl
+  - wget
+  - jq
+  - pandoc
+  - keepassxc
+  - neovim         # default code editor; LazyVim config ships in skel, plugins bootstrap at setup (hemo-lazyvim)
+  # Guest integration — ALL baked so one image works on any hypervisor; only the
+  # daemon matching the detected host activates (clipboard, drag-drop, resize).
+  - open-vm-tools          # VMware daemon
+  - open-vm-tools-desktop  # VMware clipboard / drag-drop / auto-resize (X integration)
+  - qemu-guest-agent       # KVM/QEMU
+  - spice-vdagent          # QEMU/SPICE clipboard + resize
+  - virtualbox-guest-x11   # VirtualBox clipboard + resize (X); confirm pkg name in snapshot
+
+desktop_i3:
+  - rofi
+  - polybar
+  - dunst
+  - kitty                   # baked DEFAULT terminal + report/screenshot terminal (hemo-shotterm, Welcome build windows)
+  - qterminal               # NOT baked — installable on demand via Welcome "Apps & tools" (hemo-pkg install qterminal); listed here so hemo-pkg can resolve it. Picking it removes kitty.
+  - flameshot
+  - firefox-esr
+  - autorandr
+  - feh                    # wallpaper setter (hemo-role-apply uses it) + quick image view
+  - x11-xserver-utils      # xrandr/xset etc. the i3 config assumes
+  - picom                  # compositor (i3 execs `picom -b`); shadows/fade, no tearing
+  - i3lock-color           # screen lock via hemo-lock ($mod+Shift+x); provides i3lock
+  - xss-lock               # auto-lock on idle + before suspend (bridges i3lock to logind)
+  - autotiling             # splits each new window along the focused tile's longer side
+  - python3-i3ipc          # hemo-open's post-move (window::new); autotiling pulls it too, but don't rely on that
+  - kali-themes-common     # Flat-Remix icons: launcher, tray, Thunar (GTK icon theme)
+  - fonts-font-awesome     # icon glyphs for polybar modules (font-1)
+  # report/screenshot consistency: fixed font + window capture + framing
+  - fonts-jetbrains-mono   # fixed terminal font so screenshots match
+  - maim                   # window/region capture (used by `shot`)
+  - xdotool                # active-window id (used by `shot`)
+  - xclip                  # copy image to clipboard
+  - imagemagick            # consistent border + fixed width (used by `shot`)
+  # obsidian, starship: see extra.yml (not in Kali repo). vscodium is opt-in at setup (extra.yml)
+
+# ---- Desktop apps & daily-driver QoL (BAKED) --------------------------------
+# The lean `-D i3 -T none` pipeline build won't pull these on its own, so bake
+# them for a usable daily driver. (build.sh reads this section too.)
+desktop_apps:
+  - btop                   # resource monitor (polybar cpu/mem click opens it)
+  - fastfetch              # system info with the Hemo lizard logo (/usr/share/hemo/fastfetch)
+  - gimp                   # image editor: color/annotate wallpapers + report screenshots
+  # file management: GUI + keyboard-driven + dual-pane/remote
+  - thunar
+  - thunar-archive-plugin  # extract/create archives from the context menu
+  - thunar-volman          # auto-manage removable media
+  - lf                     # keyboard-driven TUI file manager (Go, fast, apt-native default)
+  # yazi is the 2025-26 best-in-class TUI FM (Rust, kitty-graphics previews) but is
+  # NOT in apt — vendored as a pinned binary (see extra.yml + provision.sh).
+  - mc                     # Midnight Commander: dual-pane; also usable over SSH on targets
+  # viewing
+  - zathura                # lightweight PDF viewer (vim keys) — reads our pandoc reports
+  - zathura-pdf-poppler
+  # audio (QoL)
+  - pipewire
+  - pipewire-pulse
+  - wireplumber
+  - pavucontrol            # GUI mixer
+  - pamixer                # CLI volume (polybar module)
+  # network tray applet (wifi / VPN from the bar)
+  - network-manager-applet # nm-applet (tray); was network-manager-gnome, now split
+  - nm-connection-editor   # bar IP-tile right-click
+  # archives
+  - p7zip-full
+  - unzip
+  - zip
+  - xarchiver              # GUI archive manager (pairs with thunar)
+  - xdg-user-dirs          # ~/Documents, ~/Pictures, ~/Downloads ... (run at i3 login; no DE autostart)
+  # removable + network media mounting
+  - gvfs
+  - gvfs-backends
+  - udisks2
+  - ntfs-3g
+  - exfatprogs
+  - cifs-utils             # mount.cifs for SMB shares (evidence / loot)
+  # appearance + fonts
+  - lxappearance           # set the GTK dark theme consistently (thunar/pavucontrol/libreoffice)
+  - fonts-noto
+  - fonts-noto-color-emoji
+  - fonts-nerd-symbols     # Nerd Font glyph fallback for polybar/starship icons (confirm in snapshot; sid/forky). Patched JetBrainsMono Nerd Font is vendored for exact alignment.
+  # clipboard / automount / viewer / night-light — i3-native QoL
+  - copyq                  # clipboard manager (GUI + searchable history); greenclip is the rofi-native default (vendored)
+  - udiskie                # auto-mount removable media + tray + notifications (udisks2 frontend for a no-DE i3)
+  - nsxiv                  # fast image/screenshot gallery viewer (thumbnail grid + vim keys)
+  - gammastep              # night-light / blue-light filter (maintained redshift fork; X11+Wayland)
+  # first-run setup hub (hemo-welcome, Python/GTK3) + a polkit agent for its pkexec prompts
+  - python3-gi             # Python GTK3 bindings — the hemo-welcome control center
+  - gir1.2-gtk-3.0         # GTK3 typelib for python3-gi
+  - gir1.2-gdkpixbuf-2.0   # pixbuf typelib (the welcome header logo)
+  - python3-pil            # Pillow — hemo-net-icons renders the accent nm-applet tray glyphs at login
+  - yad                    # lightweight GTK dialogs (used by misc scripts)
+  - lxpolkit               # lightweight polkit auth agent (pkexec password dialogs under i3).
+                           # The tray-toggle binary `gammastep-indicator` ships INSIDE this package
+                           # (not a separate apt pkg); it needs gir1.2-ayatanaappindicator3-0.1 to show a tray icon.
+  # office — read/write client docs (user chose to bake it)
+  - libreoffice-writer
+  - libreoffice-calc
+  - libreoffice-impress
+  - libreoffice-gtk3       # GTK integration so it follows the dark theme
+  # engagement notes — Obsidian is the single baked default (extra.yml; provision.sh installs it
+  # via hemo-pkg, and hemo-welcome-apply on the image path). Cherrytree is catalogued here only so
+  # it's installable on demand (Welcome > Apps & tools, or HEMO_NOTES=cherrytree|both at provision);
+  # it is NOT baked by default. Keep this entry so `hemo-pkg install cherrytree` resolves.
+  - cherrytree             # offline hierarchical notes: inline screenshots, code highlight, 1-file PDF/HTML export (OSCP-ready)
+  # NetworkManager VPN plugins — reach a CLIENT network over their VPN, GUI via nm-applet
+  - network-manager-openconnect-gnome  # Cisco AnyConnect / GlobalProtect / Pulse — the most common client SSL VPNs
+  - network-manager-openvpn-gnome
+  - network-manager-vpnc-gnome         # Cisco legacy IPsec / IKEv1
+  # Fortinet SSL VPN: network-manager-fortisslvpn-gnome is NOT in all Kali snapshots
+  # (present in Debian sid/bookworm, was absent from testing). Add when available:
+  #   sudo apt install network-manager-fortisslvpn-gnome
+  - network-manager-l2tp-gnome
+  - network-manager-strongswan         # IKEv2 IPsec (ships its own GUI; no -gnome pkg)
+  # report generation — pandoc (base) + a reliable XeLaTeX subset + an HTML/CSS path.
+  # (Optional modern engine: typst — LaTeX-free, NOT in apt; vendor the release binary if wanted.)
+  - texlive-xetex          # xelatex engine for pandoc->PDF (Unicode + font control)
+  - texlive-latex-recommended
+  - texlive-latex-extra     # packages pandoc's default template pulls in
+  - texlive-fonts-recommended
+  - lmodern
+  - weasyprint             # HTML/CSS -> PDF path (SysReptor-style); lighter than full texlive
+
+recon:
+  - recon-ng              # modular recon framework
+  - maltego               # link-analysis OSINT GUI
+  - metagoofil            # public-document metadata harvesting
+  - onesixtyone           # fast SNMP community scanner
+  - nmap
+  - masscan
+  - subfinder
+  - httpx-toolkit  # ProjectDiscovery httpx (not the python 'httpx')
+  - dnsx           # ProjectDiscovery DNS toolkit
+  - naabu          # ProjectDiscovery port scanner
+  - katana         # ProjectDiscovery crawler
+  - amass          # subdomain enumeration (thorough; a bit heavy)
+  - theharvester
+  - mitmproxy      # intercepting proxy for web/API/mobile
+  - gitleaks       # secret scanning
+  - testssl.sh     # TLS/SSL assessment
+  - whatweb        # web fingerprinting
+  - wafw00f        # WAF detection
+  - rustscan       # fast port sweep that hands off to nmap (confirm pkg in snapshot)
+  - dnsrecon       # DNS enumeration (classic)
+  - dnsenum        # DNS enumeration (classic)
+  - dnstwist       # typosquat / phishing-domain discovery
+  - sherlock       # username OSINT across sites (confirm pkg name in snapshot)
+  - spiderfoot     # OSINT automation engine (heavy; service-style)
+  # gowitness, discover, trufflehog, gau: see extra.yml
+
+ad:
+  - donut                  # TheWover donut — position-independent shellcode generator (red_team)
+  - powershell-empire     # PowerShell/Python C2 (AD)
+  - starkiller            # Empire GUI client
+  - mimikatz              # Windows credential tooling (drop on target)
+  - netexec
+  - python3-impacket
+  - impacket-scripts
+  - certipy-ad
+  - responder
+  - evil-winrm
+  - enum4linux-ng
+  - python3-ldapdomaindump
+  # BloodHound: MIGRATED to BloodHound Community Edition (2026-10-03). The legacy
+  #   apt `bloodhound` GUI + standalone `neo4j` are REMOVED (legacy line is EOL
+  #   upstream — SpecterOps replaced it with CE). CE runs as a pinned Docker stack
+  #   (neo4j + postgres + web + API), idle-until-invoked, via `hemo-bloodhound up`.
+  #   Collectors: SharpHound (Windows, in /opt/SharpCollection), bloodhound-ce
+  #   (Linux/remote, pipx), azurehound (Azure, go) — see extra.yml.
+  # bloodyAD, kerbrute, mitm6, pypykatz, certsync, coercer, DonPAPI, lsassy,
+  # adidnsdump, Snaffler, SharpCollection: see extra.yml
+
+web:
+  - wfuzz                 # web fuzzer
+  - sslscan               # TLS/cipher enumeration
+  - cmseek                # CMS detection + enum
+  - burpsuite      # Community; Pro is a first-boot fetch (licensed.yml)
+  - ffuf
+  - feroxbuster
+  - gobuster
+  - nuclei
+  - sqlmap
+  - wpscan
+  - nikto
+  - commix               # automated command-injection exploitation (the sqlmap of cmdi)
+  - zaproxy              # OWASP ZAP — free automated web scanner (Burp-Pro-free path); binary `zap`
+
+password:
+  - hashcat        # CPU-only in a VM
+  - hashcat-utils  # masks/rules helpers around hashcat
+  - john
+  - hydra
+  - seclists
+  - cewl
+
+c2:
+  - metasploit-framework
+  - proxychains4
+  - ligolo-ng      # confirm present in snapshot; else move to extra.yml (go)
+  - bettercap      # modern LAN MITM / sniffing / network-attack framework
+  - sshuttle       # transparent VPN-over-SSH pivoting (complements chisel/ligolo)
+  # chisel, AdaptixC2, penelope, sliver, villain, donut, PEASS-ng, pspy: see extra.yml
+
+report:
+  - exploitdb      # provides `searchsploit`
+
+# Base client plumbing every role can use (RDP into a client box, VPN in).
+plumbing:
+  - freerdp3-x11   # scriptable RDP; binary is `xfreerdp3` (Kali moved 2->3; v2 pkg dropped)
+  - openvpn
+  - wireguard-tools
+
+# Client network tools — role-specific since 2026-10-09 (were baked in `plumbing`
+# / `base`); roles.yml puts them in red_team / pentest / web / blue_net.
+net_clients:
+  - wireshark
+  - ncat
+  - netcat-traditional
+  - socat
+  - tcpdump
+  - smbclient
+  - smbmap
+  - ldap-utils     # ldapsearch
+  - krb5-user      # kinit, for Kerberos tooling
+
+# Light binary / loot inspection set (no mobile RE suite; ghidra left out).
+reversing:
+  - ghidra                # NSA decompiler/SRE suite — the core RE tool
+  - gdb-multiarch         # debug non-native binaries
+  - apktool               # Android APK decode/rebuild
+  - jadx                  # Android/Java decompiler
+  - dex2jar               # Dalvik -> jar
+  - jd-gui                # Java decompiler GUI
+  - patchelf              # edit ELF interpreter/rpath
+  - hexedit               # terminal hex editor
+  - edb-debugger          # GUI ELF debugger
+  - radare2
+  - rizin                    # radare2 fork (cutter's engine)
+  - rizin-cutter             # GUI disassembler on rizin (apt: cutter was renamed rizin-cutter)
+  - python3-ropgadget        # ROP gadget finder (replaces ropper: its filebytes dep is broken on Python 3.12+)
+  - python3-pwntools         # exploit-dev / CTF toolkit. Kali's package, deps prebuilt (unicorn, capstone);
+                             # the pipx install failed on Python 3.14 building unicorn from source
+  - binwalk
+  - libimage-exiftool-perl   # exiftool
+  - gdb                      # pwndbg added via extra.yml (git)
+  - ltrace
+  - strace
+  - upx-ucl                  # pack/unpack UPX samples; binary is `upx`
+  - oletools                 # malicious Office macro/doc analysis (olevba, oleid)
+  - pdfid                    # malicious-PDF triage (Didier Stevens suite)
+  - pdf-parser               # malicious-PDF object inspection
+  # flare-floss (obfuscated-string extraction): see extra.yml
+
+# ---- Defensive / blue + vuln assessment (role-install catalog; NOT baked) ----
+# Fresh sections (2026-10-02) for the purple roles. Package names below are
+# drafted — CONFIRM each exists in the pinned snapshot on the first build.
+vuln:                        # vulnerability_assessor role
+  - legion                   # GUI recon/vuln wrapper
+  - gvm                      # Greenbone/OpenVAS — HEAVY; confirm metapackage name
+  # trivy: see extra.yml (not in Kali repo)
+
+blue_host:                   # DFIR / host analysis
+  # loki (Neo23x0 IOC/YARA scanner) is NOT the apt 'loki' (genetics); see extra.yml (git)
+  - sleuthkit
+  - autopsy
+  - yara
+  - chkrootkit
+  - rkhunter
+  - clamav
+  - lynis
+  - bulk-extractor
+  - foremost
+  - regripper                # confirm pkg name in snapshot
+  - plaso                    # log2timeline super-timelining; confirm in snapshot
+  - ewf-tools                # E01 evidence image handling (libewf)
+  - dc3dd                    # forensic imaging
+  # volatility3: see extra.yml (pipx); chainsaw: see extra.yml (binary)
+
+blue_net:                    # NSM / traffic + flow analysis
+  - termshark             # TUI for tshark
+  - netsniff-ng           # high-perf capture/replay toolkit
+  - tcpreplay             # replay saved PCAPs
+  - suricata
+  - snort
+  - tshark
+  - ngrep
+  - tcpflow
+  - p0f
+  - nfdump
+  - mono-runtime             # runtime for NetworkMiner (see extra.yml)
+  # networkminer: see extra.yml; arkime (PCAP index) is heavy — run as a container
+
+# ---- Backfill catalog (2026-10-05) ------------------------------------------
+# declutter.sh now strips the stock Kali toolset (kali-linux-default/-headless/
+# -tools-top10) so the image ships lean; roles reinstall what each persona needs.
+# These are the common Kali-default tools that would otherwise silently vanish —
+# re-offered here (all apt names, confirmed present in the snapshot) and wired
+# into the roles below. Grouped by capability; section names are organisational
+# only (hemo-pkg resolves a name from ANY apt.yml section).
+wireless:                    # Wi-Fi / RF / Bluetooth
+  - aircrack-ng
+  - wifite
+  - reaver
+  - pixiewps
+  - bully
+  - macchanger
+  - spooftooph               # Bluetooth device spoofing
+net_discovery:               # host/port/DNS sweeps + SNMP/NetBIOS
+  - arp-scan
+  - netdiscover
+  - fping
+  - hping3
+  - fierce
+  - dmitry
+  - dnsmap
+  - snmpcheck
+  - nbtscan
+web_legacy:                  # classic content discovery / WebDAV (pre-ffuf era, still handy)
+  - dirb
+  - dirbuster
+  - skipfish
+  - davtest
+  - cadaver
+cracking:                    # online/offline cracking helpers around hashcat/john
+  - medusa
+  - ncrack
+  - patator
+  - crunch                   # wordlist generator
+  - rsmangler                # wordlist permutation
+  - maskprocessor            # mask-based candidate generator
+  - hashid
+  - hash-identifier
+creds:                       # Windows/AD credential extraction + hash tooling
+  - samdump2
+  - creddump7
+  - chntpw                   # offline SAM/registry edit
+  - gpp-decrypt              # Group Policy Preferences password decrypt
+  - passing-the-hash
+  - polenum
+exploit:                     # payload/backdoor/social-engineering
+  - set                      # Social-Engineer Toolkit
+  - weevely                  # PHP web shell / backdoor
+  - webshells
+  - laudanum
+  - windows-binaries
+  - msfpc                    # Metasploit payload creator
+pivot:                       # covert-channel / tunneling / pivoting
+  - iodine                   # DNS tunnel
+  - dns2tcp
+  - ptunnel                  # ICMP tunnel
+  - udptunnel
+  - proxytunnel
+  - redsocks
+  - miredo                   # Teredo IPv6
+  - sslh                     # ssh/https port multiplexer
+sniff:                       # MITM / sniffing (bettercap is in c2)
+  - dsniff
+  - ettercap-graphical
+tls:                         # TLS/SSL assessment (sslscan/testssl.sh are in web/recon)
+  - sslyze
+  - ssldump
+  - sslsplit
+forensics_extra:             # DFIR carving/imaging (complements blue_host)
+  - scalpel
+  - magicrescue
+  - guymager
+  - hashdeep
+
+# ---- Container runtime (BAKED) — heavy services run as idle Docker stacks ----
+# BloodHound CE (hemo-bloodhound), Arkime (hemo-arkime), the log-analytics stack
+# (hemo-elk: OpenSearch+Dashboards by default, or Elasticsearch+Kibana), and future
+# services. Installed in the base so the service helpers work out of the box; no
+# container is started or image pulled at build time (all are idle-until-invoked).
+runtime:
+  - docker.io              # the Docker daemon only (the `docker` CLI is docker-cli)
+  - docker-cli             # the `docker` command — docker.io only *Recommends* it
+  - docker-compose         # Compose v2 (`docker compose`) — AdaptixC2 + BloodHound need it
+  - docker-buildx          # `docker buildx` only (does NOT provide compose)
+
+# ---- OS hardening (BAKED into the thin core; some bits operator-toggled) ----
+# Adapted from Athena OS's posture, but tuned so it NEVER fights offensive work.
+# Split (see hemo-harden + provision.sh):
+#   ALWAYS-ON (safe for an ops box): AppArmor enabled, bubblewrap on the BROWSER
+#     only, and low-risk sysctls (dmesg_restrict, kptr_restrict).
+#   OPERATOR-TOGGLED via `hemo-harden on|off`, OFF by default because they fight
+#     callback-catching / MITM in a VM: ufw default-deny inbound,
+#     stricter net sysctls (rp_filter, source-route/redirect drop).
+#   DEFERRED to the persistent-install / ISO path (NOT here): LUKS2 FDE,
+#     Secure Boot + signed UKI, TPM2 measured boot.
+# NOTE: ptrace_scope is deliberately NOT restricted — it would break gdb/pwndbg.
+hardening:
+  - apparmor                 # MAC; Kali kernel already supports it — we enable it
+  - apparmor-utils
+  - bubblewrap               # browser sandbox (bwrap). The /usr/local/bin/firefox-esr wrapper
+                             # (overlays/) relaunches Firefox inside bwrap; it self-degrades to a
+                             # normal launch if bwrap is absent or HEMO_NO_SANDBOX=1. Reliable in
+                             # apt (unlike firejail, which drifts in/out of Debian testing).
+  - ufw                      # firewall — INSTALLED but left disabled (hemo-harden on)
+  - auditd                   # basic audit logging
+
+# Boot & login branding: GRUB theme, Plymouth boot-glow, LightDM greeter.
+# Applied by branding/install-branding.sh (rasterizes the SVG art to PNG).
+branding:
+  - plymouth
+  - plymouth-themes
+  - lightdm
+  - lightdm-gtk-greeter
+  - librsvg2-bin            # rsvg-convert, to rasterize the SVG art
+  - imagemagick             # rasterizer fallback
+
+# ---- Editor ----------------------------------------------------------------
+# Neovim is baked (see `base`); the LazyVim config + plugin bootstrap is done by
+# `hemo-lazyvim` at setup. nano stays the default $EDITOR. VSCodium is offered at
+# setup (instead of / alongside LazyVim) and installs from extra.yml.

@@ -1,0 +1,51 @@
+/* Hemo — palette over Adwaita-dark for GTK3 apps (yad/hemo-welcome, thunar, ...).
+   Neutrals live as @define-color (rewritten per MODE by hemo-role-apply); the
+   accent lives in hemo-accent.css (rewritten per primary role). */
+@import url("hemo-accent.css");
+
+@define-color theme_bg_color          #221d19;
+@define-color theme_base_color        #2c2621;
+@define-color theme_fg_color          #e8dfd4;
+@define-color theme_text_color        #e8dfd4;
+@define-color theme_selected_bg_color @hemo_accent;
+@define-color theme_selected_fg_color #221d19;
+@define-color borders                 #3f372f;
+@define-color unfocused_borders       #3f372f;
+@define-color hemo_bar                #1b1714;
+@define-color hemo_muted              #a39686;
+
+window, dialog, .background { background-color: @theme_bg_color; color: @theme_fg_color; }
+
+/* lists (yad --list role pickers) */
+treeview.view, .view { background-color: @theme_base_color; color: @theme_fg_color; }
+treeview.view:selected, .view:selected { background-color: @hemo_accent; color: @theme_selected_fg_color; }
+treeview.view header button { background: @hemo_bar; color: @hemo_muted; border-color: @borders; }
+
+/* buttons (yad form fbtn rows + dialog buttons) */
+button {
+  background-image: none; background-color: @hemo_bar; color: @theme_fg_color;
+  border: 1px solid @borders; border-radius: 6px; box-shadow: none;
+  padding: 8px 14px;
+}
+button:hover { border-color: @hemo_accent; background-color: @borders; }
+button:active, button:checked { background-color: @hemo_accent; color: @theme_selected_fg_color; }
+button:focus { outline-color: @hemo_accent; }
+
+/* notebook tabs (hemo-welcome) */
+notebook > header { background-color: @theme_bg_color; border-color: @borders; }
+notebook > header tab { color: @hemo_muted; padding: 8px 18px; }
+notebook > header tab:checked { color: @theme_fg_color; box-shadow: inset 0 -2px @hemo_accent; }
+notebook > stack { background-color: @theme_bg_color; }
+
+check:checked, radio:checked { background-image: none; background-color: @hemo_accent; color: @theme_selected_fg_color; border-color: @hemo_accent; }
+entry { background-color: @theme_base_color; color: @theme_fg_color; border-color: @borders; }
+entry:focus { border-color: @hemo_muted; box-shadow: none; }
+
+/* title bars + menus (apps that draw their own headerbar, e.g. cherrytree):
+   Adwaita-dark paints these dark in every mode, so they follow the neutrals */
+headerbar, .titlebar { background: @hemo_bar; color: @theme_fg_color; border-color: @borders; box-shadow: none; }
+headerbar .title, headerbar .subtitle { color: @theme_fg_color; }
+menubar, menubar > menuitem { background: transparent; color: @theme_fg_color; }
+menubar > menuitem:hover { background-color: @hemo_accent; color: @theme_selected_fg_color; }
+menu, .menu, .context-menu, popover { background-color: @theme_base_color; color: @theme_fg_color; }
+menu menuitem:hover { background-color: @hemo_accent; color: @theme_selected_fg_color; }

@@ -1,0 +1,39 @@
+# hemo-firstboot — one-shot role picker + identity reset on the first boot of a
+# clone. Runs on tty1 (holds the console so whiptail has a terminal) BEFORE the
+# display manager, AFTER the network is up so online tool installs can succeed.
+#
+# Install:
+#   cp firstboot/hemo-firstboot.sh      /usr/local/sbin/hemo-firstboot
+#   cp firstboot/hemo-firstboot.service /etc/systemd/system/
+#   systemctl enable hemo-firstboot.service
+#
+# It self-disables after a successful run via /var/lib/hemo/firstboot.done, so
+# leaving it enabled is harmless on later boots.
+
+[Unit]
+Description=Hemo first-boot role picker and identity reset
+After=network-online.target
+Wants=network-online.target
+Before=display-manager.service lightdm.service getty@tty1.service
+Conflicts=getty@tty1.service
+ConditionPathExists=!/var/lib/hemo/firstboot.done
+
+[Service]
+Type=oneshot
+Environment=TERM=linux
+# Quit the boot splash first so the console role picker is visible (not hidden
+# behind the glowing-logo Plymouth screen). Leading '-' = ignore if absent.
+ExecStartPre=-/bin/sh -c 'plymouth quit 2>/dev/null || true'
+ExecStart=/usr/local/sbin/hemo-firstboot
+RemainAfterExit=no
+# Give the picker the console so whiptail renders and reads input.
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

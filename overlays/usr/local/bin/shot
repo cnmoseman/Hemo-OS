@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Hemo — report screenshot helper.
+# Captures a window (or region), applies a consistent border + fixed width,
+# saves it to the engagement folder, and copies it to the clipboard. The point
+# is that every report screenshot comes out identically framed and sized.
+#
+#   shot            capture the ACTIVE window (default)
+#   shot -s         select a region instead
+#
+# Tunables (override via env, e.g. SHOT_WIDTH=1280 shot):
+# land in the active engagement's screenshots/ (hemo-engagement), else the default
+_eng="$(hemo-engagement path 2>/dev/null || true)"
+SHOT_DIR="${SHOT_DIR:-${_eng:+$_eng/screenshots}}"
+SHOT_DIR="${SHOT_DIR:-$HOME/engagements/screenshots}"
+SHOT_WIDTH="${SHOT_WIDTH:-1100}"          # final image width in px (0 = don't resize)
+SHOT_PAD="${SHOT_PAD:-18}"                # inner padding, px
+SHOT_PAD_COLOR="${SHOT_PAD_COLOR:-#0e1113}"
+SHOT_EDGE_COLOR="${SHOT_EDGE_COLOR:-#2a3137}"  # 1px hairline edge
+
+set -euo pipefail
+mkdir -p "$SHOT_DIR"
+f="$SHOT_DIR/hemo_$(date +%F_%H-%M-%S).png"
+
+need(){ command -v "$1" >/dev/null 2>&1 || { echo "missing: $1 (sudo apt install $2)"; exit 1; }; }
+need maim maim; need convert imagemagick
+
+if [ "${1:-}" = "-s" ]; then
+  maim -s "$f"                                   # interactive region
+else
+  need xdotool xdotool
+  maim -i "$(xdotool getactivewindow)" "$f"      # active window
+fi
+
+# consistent framing: padding + 1px hairline, then fixed width
+convert "$f" -bordercolor "$SHOT_PAD_COLOR" -border "$SHOT_PAD" \
+             -bordercolor "$SHOT_EDGE_COLOR" -border 1 "$f"
+[ "$SHOT_WIDTH" -gt 0 ] && convert "$f" -resize "${SHOT_WIDTH}x" "$f"
+
+# copy to clipboard if possible
+if command -v xclip >/dev/null 2>&1; then
+  xclip -selection clipboard -t image/png -i "$f" >/dev/null 2>&1 || true
+fi
+echo "saved: $f"

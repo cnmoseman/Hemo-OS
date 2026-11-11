@@ -1,0 +1,176 @@
+{
+  "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "DisableFirefoxAccounts": true,
+    "DisableDefaultBrowserAgent": true,
+    "DontCheckDefaultBrowser": true,
+    "NoDefaultBookmarks": true,
+    "DisplayBookmarksToolbar": "always",
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "EnableTrackingProtection": {
+      "Value": false,
+      "Locked": false
+    },
+    "HttpsOnlyMode": "disabled",
+    "DNSOverHTTPS": {
+      "Enabled": false,
+      "Locked": true
+    },
+    "Certificates": {
+      "ImportEnterpriseRoots": true
+    },
+    "UserMessaging": {
+      "ExtensionRecommendations": false,
+      "FeatureRecommendations": false,
+      "WhatsNew": false,
+      "SkipOnboarding": true
+    },
+    "FirefoxHome": {
+      "Pocket": false,
+      "Snippets": false,
+      "SponsoredTopSites": false,
+      "SponsoredPocket": false
+    },
+    "ExtensionSettings": {
+      "*": {
+        "installation_mode": "allowed"
+      },
+      "foxyproxy@eric.h.jung": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/foxyproxy-standard/latest.xpi"
+      },
+      "{c3c10168-4186-445c-9c5b-63f12b8e2c87}": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/cookie-editor/latest.xpi"
+      },
+      "{f1423c11-a4e2-4709-a0f8-6d6a68c83d08}": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/hacktools/latest.xpi"
+      },
+      "wappalyzer@crunchlabz.com": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/wappalyzer/latest.xpi"
+      },
+      "{a6c4a591-f1b2-4f03-b3ff-767e5bedf4e7}": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/user-agent-string-switcher/latest.xpi"
+      },
+      "wayback_machine@mozilla.org": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/wayback-machine_new/latest.xpi"
+      }
+    },
+    "Bookmarks": [
+      { "Title": "crt.sh (cert transparency)", "URL": "https://crt.sh/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "DNSDumpster", "URL": "https://dnsdumpster.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Shodan", "URL": "https://www.shodan.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Censys Search", "URL": "https://search.censys.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "urlscan.io", "URL": "https://urlscan.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "VirusTotal", "URL": "https://www.virustotal.com/gui/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Hunter.io", "URL": "https://hunter.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "OSINT Framework", "URL": "https://osintframework.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Google Hacking DB", "URL": "https://www.exploit-db.com/google-hacking-database", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "ViewDNS.info", "URL": "https://viewdns.info/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "intoDNS", "URL": "https://intodns.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Reverse WHOIS", "URL": "https://www.reversewhois.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "NetworksDB", "URL": "https://networksdb.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "ARIN Whois / RDAP", "URL": "https://search.arin.net/rdap/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Pentest-Tools", "URL": "https://pentest-tools.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Justia Dockets (court records)", "URL": "https://dockets.justia.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "DeHashed (breaches)", "URL": "https://app.dehashed.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Intelligence X (leaks)", "URL": "https://intelx.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "LeakCheck", "URL": "https://leakcheck.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Leak-Lookup", "URL": "https://leak-lookup.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "LeakRadar", "URL": "https://leakradar.io/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Snusbase", "URL": "https://snusbase.com/", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "ProxyNova COMB", "URL": "https://www.proxynova.com/tools/comb", "Folder": "Recon", "Placement": "toolbar" },
+      { "Title": "Hudson Rock (infostealers)", "URL": "https://www.hudsonrock.com/free-tools", "Folder": "Recon", "Placement": "toolbar" },
+
+      { "Title": "WADComs", "URL": "https://wadcoms.github.io/", "Folder": "AD", "Placement": "toolbar" },
+      { "Title": "The Hacker Recipes", "URL": "https://www.thehacker.recipes/", "Folder": "AD", "Placement": "toolbar" },
+      { "Title": "ired.team", "URL": "https://www.ired.team/", "Folder": "AD", "Placement": "toolbar" },
+      { "Title": "AD Security (adsecurity.org)", "URL": "https://adsecurity.org/", "Folder": "AD", "Placement": "toolbar" },
+
+      { "Title": "PortSwigger Web Security Academy", "URL": "https://portswigger.net/web-security", "Folder": "Web & API", "Placement": "toolbar" },
+      { "Title": "OWASP Web Security Testing Guide", "URL": "https://owasp.org/www-project-web-security-testing-guide/", "Folder": "Web & API", "Placement": "toolbar" },
+      { "Title": "OWASP Cheat Sheet Series", "URL": "https://cheatsheetseries.owasp.org/", "Folder": "Web & API", "Placement": "toolbar" },
+      { "Title": "JWT.io", "URL": "https://jwt.io/", "Folder": "Web & API", "Placement": "toolbar" },
+      { "Title": "regex101", "URL": "https://regex101.com/", "Folder": "Web & API", "Placement": "toolbar" },
+      { "Title": "SSL Labs Server Test", "URL": "https://www.ssllabs.com/ssltest/", "Folder": "Web & API", "Placement": "toolbar" },
+
+      { "Title": "HackTricks Cloud", "URL": "https://cloud.hacktricks.xyz/", "Folder": "Cloud", "Placement": "toolbar" },
+      { "Title": "Hacking the Cloud", "URL": "https://hackingthe.cloud/", "Folder": "Cloud", "Placement": "toolbar" },
+
+      { "Title": "CrackStation", "URL": "https://crackstation.net/", "Folder": "Creds & Crypto", "Placement": "toolbar" },
+      { "Title": "hashes.com", "URL": "https://hashes.com/en/decrypt/hash", "Folder": "Creds & Crypto", "Placement": "toolbar" },
+      { "Title": "Hashcat example hashes", "URL": "https://hashcat.net/wiki/doku.php?id=example_hashes", "Folder": "Creds & Crypto", "Placement": "toolbar" },
+      { "Title": "CyberChef", "URL": "https://gchq.github.io/CyberChef/", "Folder": "Creds & Crypto", "Placement": "toolbar" },
+      { "Title": "dcode.fr", "URL": "https://www.dcode.fr/en", "Folder": "Creds & Crypto", "Placement": "toolbar" },
+
+      { "Title": "Exploit-DB", "URL": "https://www.exploit-db.com/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "NVD / CVE Search", "URL": "https://nvd.nist.gov/vuln/search", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "Vulners", "URL": "https://vulners.com/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "GTFOBins", "URL": "https://gtfobins.github.io/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "LOLBAS", "URL": "https://lolbas-project.github.io/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "CVSS Calculator", "URL": "https://www.first.org/cvss/calculator/3.1", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "CISA KEV Catalog", "URL": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "Sploitus", "URL": "https://sploitus.com/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "WPScan Vuln DB", "URL": "https://wpscan.com/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+      { "Title": "endoflife.date", "URL": "https://endoflife.date/", "Folder": "Exploits & CVEs", "Placement": "toolbar" },
+
+      { "Title": "HackTricks", "URL": "https://book.hacktricks.xyz/", "Folder": "Playbooks", "Placement": "toolbar" },
+      { "Title": "PayloadsAllTheThings", "URL": "https://github.com/swisskyrepo/PayloadsAllTheThings", "Folder": "Playbooks", "Placement": "toolbar" },
+      { "Title": "Reverse Shell Generator", "URL": "https://www.revshells.com/", "Folder": "Playbooks", "Placement": "toolbar" },
+      { "Title": "MITRE ATT&CK", "URL": "https://attack.mitre.org/", "Folder": "Playbooks", "Placement": "toolbar" },
+      { "Title": "pentestmonkey cheat sheets", "URL": "https://pentestmonkey.net/category/cheat-sheet", "Folder": "Playbooks", "Placement": "toolbar" },
+
+      { "Title": "MITRE D3FEND", "URL": "https://d3fend.mitre.org/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "Sigma HQ", "URL": "https://sigmahq.io/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "LOLDrivers", "URL": "https://www.loldrivers.io/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "MalwareBazaar", "URL": "https://bazaar.abuse.ch/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "URLhaus", "URL": "https://urlhaus.abuse.ch/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "ThreatFox", "URL": "https://threatfox.abuse.ch/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "GreyNoise", "URL": "https://viz.greynoise.io/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "AlienVault OTX", "URL": "https://otx.alienvault.com/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "Any.run", "URL": "https://any.run/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "Hybrid Analysis", "URL": "https://www.hybrid-analysis.com/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "EchoTrail (process lookup)", "URL": "https://www.echotrail.io/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "Malware-Traffic-Analysis", "URL": "https://www.malware-traffic-analysis.net/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "The DFIR Report", "URL": "https://thedfirreport.com/", "Folder": "Blue Team", "Placement": "toolbar" },
+      { "Title": "hemo-elk — Kibana / Dashboards (local)", "URL": "http://127.0.0.1:5601/", "Folder": "Blue Team", "Placement": "toolbar" },
+
+      { "Title": "OWASP Juice Shop (demo)", "URL": "https://demo.owasp-juice.shop/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Gin and Juice Shop", "URL": "https://ginandjuice.shop/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Altoro Mutual", "URL": "http://demo.testfire.net/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Google Gruyere", "URL": "https://google-gruyere.appspot.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Google Firing Range", "URL": "https://public-firing-range.appspot.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Google XSS Game", "URL": "https://xss-game.appspot.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Acunetix testphp", "URL": "http://testphp.vulnweb.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Acunetix REST API", "URL": "http://rest.vulnweb.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Invicti PHP", "URL": "http://php.testinvicti.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Invicti Vulnerable API", "URL": "http://vulnapi.testinvicti.com/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Pentest-Ground DVWA", "URL": "https://pentest-ground.com:4280/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Pentest-Ground DVGA (GraphQL)", "URL": "https://pentest-ground.com:5013/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "Pentest-Ground RestFlaw", "URL": "https://pentest-ground.com:9000/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "httpbin", "URL": "https://httpbin.org/", "Folder": "Practice Targets", "Placement": "toolbar" },
+      { "Title": "scanme.nmap.org", "URL": "http://scanme.nmap.org/", "Folder": "Practice Targets", "Placement": "toolbar" },
+
+      { "Title": "TruePeopleSearch", "URL": "https://www.truepeoplesearch.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "FastBackgroundCheck", "URL": "https://www.fastbackgroundcheck.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "Whitepages", "URL": "https://www.whitepages.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "Spokeo", "URL": "https://www.spokeo.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "Radaris", "URL": "https://radaris.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "411.com", "URL": "https://www.411.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "Advanced Background Checks", "URL": "https://www.advancedbackgroundchecks.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "FamilyTreeNow", "URL": "https://www.familytreenow.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "Addresses.com", "URL": "https://www.addresses.com/", "Folder": "People Search", "Placement": "toolbar" },
+      { "Title": "USPhoneBook", "URL": "https://www.usphonebook.com/", "Folder": "People Search", "Placement": "toolbar" },
+
+      { "Title": "Kali Docs", "URL": "https://www.kali.org/docs/", "Folder": "Docs", "Placement": "toolbar" },
+      { "Title": "Kali Tools", "URL": "https://www.kali.org/tools/", "Folder": "Docs", "Placement": "toolbar" }
+    ]
+  }
+}

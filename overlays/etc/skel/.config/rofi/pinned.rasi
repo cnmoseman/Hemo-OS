@@ -1,0 +1,160 @@
+/* Hemo rofi — hemo-launcher ($mod+d), laid out after adi1090x's type-1 style-6:
+   a centered vertical list with an accent prompt chip, mode tabs and 24px icons.
+   No banner (style-6 is bannerless). With an empty search the first rows are the
+   pinned apps (see hemo-launcher). The accent is injected per-primary-role by
+   hemo-role-apply into hemo-colors.rasi (imported below); edit that file by hand
+   and it will be overwritten on the next `hemo-theme`. */
+@import "hemo-colors.rasi"
+
+configuration {
+    modi: "drun,run,filebrowser,window";
+    show-icons: true;
+    icon-theme: "Flat-Remix-Orange-Dark";
+    display-drun: "Apps";
+    display-run: "Run";
+    display-filebrowser: "Files";
+    display-window: "Windows";
+    drun-display-format: "{name}";
+    window-format: "{w} · {c} · {t}";
+    matching: "fuzzy";
+    sort: true;
+    hover-select: true;
+    me-select-entry: "";
+    me-accept-entry: "MousePrimary";
+}
+
+* {
+    font: "JetBrainsMono Nerd Font Mono Medium 11";
+    bg:      #1b1714;
+    surface: #2c2621;
+    line:    #3f372f;
+    fg:      #e8dfd4;
+    muted:   #a39686;
+    accent:      var(hemo-accent);
+    accent-text: var(hemo-accent-text);
+    accent-on:   var(hemo-accent-on);
+    background-color: transparent;
+    text-color: @fg;
+}
+
+window {
+    transparency: "real";
+    location: center;
+    anchor: center;
+    fullscreen: false;
+    width: 800px;
+    border: 1px solid;
+    border-color: @line;
+    border-radius: 10px;
+    background-color: @bg;
+    cursor: "default";
+}
+
+mainbox {
+    spacing: 10px;
+    padding: 20px;
+    background-color: transparent;
+    children: [ "inputbar", "mode-switcher", "message", "listview" ];
+}
+
+/* ── search ── */
+inputbar {
+    spacing: 10px;
+    padding: 0px;
+    background-color: transparent;
+    text-color: @fg;
+    children: [ "textbox-prompt-colon", "entry" ];
+}
+textbox-prompt-colon {
+    expand: false;
+    str: "";
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: @accent;
+    text-color: @accent-on;
+    vertical-align: 0.5;
+}
+entry {
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: @surface;
+    text-color: @fg;
+    cursor: text;
+    placeholder: "Search…";
+    placeholder-color: @muted;
+    vertical-align: 0.5;
+}
+
+/* ── results ── */
+listview {
+    columns: 1;
+    lines: 8;
+    cycle: true;
+    dynamic: true;
+    scrollbar: false;
+    layout: vertical;
+    fixed-height: true;
+    fixed-columns: true;
+    spacing: 5px;
+    background-color: transparent;
+    text-color: @fg;
+    cursor: "default";
+}
+
+element {
+    spacing: 10px;
+    padding: 10px;
+    border-radius: 8px;
+    background-color: transparent;
+    text-color: @fg;
+    cursor: pointer;
+}
+element normal.normal,
+element alternate.normal { background-color: transparent; text-color: @fg; }
+element normal.active,
+element alternate.active { background-color: transparent; text-color: @accent-text; }
+element normal.urgent,
+element alternate.urgent { background-color: transparent; text-color: #c41e2f; }
+element selected.normal,
+element selected.active,
+element selected.urgent {
+    background-color: @accent;
+    text-color: @accent-on;
+}
+
+element-icon {
+    size: 24px;
+    background-color: transparent;
+    text-color: inherit;
+    cursor: inherit;
+}
+element-text {
+    background-color: transparent;
+    text-color: inherit;
+    highlight: inherit;
+    cursor: inherit;
+    vertical-align: 0.5;
+    horizontal-align: 0.0;
+}
+
+/* ── Apps / Run / Files / Windows tabs ── */
+mode-switcher {
+    expand: false;
+    spacing: 10px;
+    background-color: transparent;
+    text-color: @fg;
+}
+button {
+    padding: 12px;
+    border-radius: 8px;
+    background-color: @surface;
+    text-color: @muted;
+    cursor: pointer;
+}
+button selected {
+    background-color: @accent;
+    text-color: @accent-on;
+}
+
+message { padding: 10px; border-radius: 8px; background-color: @surface; }
+textbox { text-color: @muted; }

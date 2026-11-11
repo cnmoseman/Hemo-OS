@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# hemo-firefox-defaults — keep Firefox on Hemo's defaults (root; idempotent).
+#
+#  * Firefox on Linux reads system policy from /etc/firefox/policies/, not the
+#    /etc/firefox-esr/policies/ path Hemo writes (and hemo-role-apply rewrites),
+#    so link the one to the other. Without it Firefox falls back to Kali's
+#    distribution policy and no Hemo bookmarks appear.
+#  * kali-defaults diverts Firefox's distribution.ini to its own, which seeds
+#    every NEW profile's toolbar with Kali/OffSec links. Strip its bookmark
+#    sections; the Hemo policy supplies the toolbar (Kali Docs/Tools live in
+#    the red team's "Docs" folder).
+#
+# Run by provision.sh / hemo-customize.sh, and after every dpkg run by
+# /etc/apt/apt.conf.d/99hemo-firefox, so a kali-defaults upgrade can't put the
+# links back. Existing profiles keep what they already have.
+set -u
+[ "$(id -u)" = 0 ] || { echo "hemo-firefox-defaults: run as root" >&2; exit 1; }
+
+LIVE=/etc/firefox-esr/policies/policies.json
+if [ -f "$LIVE" ] && [ "$(readlink /etc/firefox/policies/policies.json)" != "$LIVE" ]; then
+    mkdir -p /etc/firefox/policies
+    ln -sfn "$LIVE" /etc/firefox/policies/policies.json
+fi
+
+# The app-menu entry (rofi) runs /usr/lib/firefox-esr/firefox-esr directly, which
+# skips the /usr/local/bin/firefox-esr sandbox wrapper (and its first-run themed
+# profile seed) that Super+B uses. Shadow it in /usr/local/share/applications
+# (searched first) with Exec pointed at the wrapper, so every launch is the same.
+DESK=/usr/share/applications/firefox-esr.desktop
+if [ -f "$DESK" ]; then
+    mkdir -p /usr/local/share/applications
+    sed -E 's#^Exec=[^ ]*firefox-esr#Exec=/usr/local/bin/firefox-esr#' "$DESK" \
+        > /usr/local/share/applications/firefox-esr.desktop
+fi
+
+INI=/usr/share/firefox-esr/distribution/distribution.ini
+[ -f "$INI" ] || exit 0
+python3 - "$INI" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().split("\n")
+out, skip = [], False
+for l in lines:
+    if l.startswith("["):
+        skip = l.startswith("[Bookmarks")
+    if not skip:
+        out.append(l)
+if out != lines:
+    open(path, "w", encoding="utf-8").write("\n".join(out).rstrip("\n") + "\n")
+PY

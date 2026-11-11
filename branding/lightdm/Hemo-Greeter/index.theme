@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=X-GNOME-Metatheme
+Name=Hemo-Greeter
+Comment=Adwaita-dark with the LightDM login box in Hemo brown
+
+[X-GNOME-Metatheme]
+GtkTheme=Hemo-Greeter

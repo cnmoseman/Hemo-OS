@@ -1,0 +1,8 @@
+# Pinned apps for the launcher ($mod+d) — one .desktop id per line, in grid
+# order (the grid is 3 wide). Find ids: ls /usr/share/applications ~/.local/share/applications
+kitty
+firefox-esr
+thunar
+kali-burpsuite
+md.obsidian.Obsidian
+cherrytree

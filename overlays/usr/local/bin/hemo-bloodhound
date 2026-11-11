@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# hemo-bloodhound — run BloodHound Community Edition as a local Docker stack,
+# idle until you invoke it (Hemo's "heavy services as containers" model).
+#
+# Replaces the EOL legacy apt BloodHound + standalone neo4j. CE bundles its own
+# neo4j + postgres + web UI + API in one compose stack. The web UI is bound to
+# 127.0.0.1 only (never exposed on the network).
+#
+#   hemo-bloodhound up        # start the stack (first run pulls images)
+#   hemo-bloodhound down      # stop it (DATA IS KEPT in named volumes)
+#   hemo-bloodhound status    # show container state
+#   hemo-bloodhound url       # print the local URL
+#   hemo-bloodhound password  # print the initial admin password from the logs
+#   hemo-bloodhound destroy   # stop AND delete all data volumes (asks first)
+#
+# Collectors live in the roles, not here: SharpHound (/opt/SharpCollection,
+# Windows), bloodhound-ce (Linux/remote), azurehound (Azure).
+set -uo pipefail
+
+DIR=/opt/hemo/bloodhound
+COMPOSE="$DIR/docker-compose.yml"
+URL="http://127.0.0.1:8080/ui/login"
+
+# NOTE: hand-build path uses current images; the reproducible kali-vm pipeline
+# pins these three tags (fragile service — pin so a bad "latest" can't break it).
+PG_IMAGE="docker.io/library/postgres:16"
+NEO4J_IMAGE="docker.io/library/neo4j:4.4"     # CE requires the neo4j 4.4 line
+BHE_IMAGE="docker.io/specterops/bloodhound:latest"   # PIN-ME in the pipeline
+
+# pick docker compose v2 (`docker compose`) or v1 (`docker-compose`)
+dc(){
+  if docker compose version >/dev/null 2>&1; then docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@"
+  else echo "hemo-bloodhound: docker compose not found (install docker.io + docker-compose)"; exit 1; fi
+}
+
+need_docker(){
+  command -v docker >/dev/null 2>&1 || { echo "hemo-bloodhound: docker not installed"; exit 1; }
+  if ! docker info >/dev/null 2>&1; then
+    echo "hemo-bloodhound: cannot talk to the docker daemon."
+    echo "  start it (sudo systemctl start docker) and make sure you're in the 'docker'"
+    echo "  group (re-login after 'sudo usermod -aG docker $USER'), or re-run with sudo."
+    exit 1
+  fi
+}
+
+# $DIR sits under root-owned /opt/hemo. Create it (sudo only if we can't) and hand
+# it to the invoking user, so the compose/config files here are writable without
+# root — same no-sudo, docker-group model as `up`.
+ensure_dir(){
+  [ -d "$DIR" ] && [ -w "$DIR" ] && return 0
+  if [ "$(id -u)" -eq 0 ]; then install -d "$DIR"
+  elif install -d "$DIR" 2>/dev/null; then :
+  else sudo install -d -o "$(id -u)" -g "$(id -g)" "$DIR" \
+         || { echo "hemo-bloodhound: cannot create $DIR (need sudo)"; exit 1; }
+  fi
+}
+
+write_compose(){
+  ensure_dir
+  [ -f "$COMPOSE" ] && return 0
+  cat > "$COMPOSE" <<EOF
+# Hemo-vendored BloodHound CE stack. Web UI bound to localhost only.
+services:
+  app-db:
+    image: ${PG_IMAGE}
+    environment:
+      POSTGRES_USER: bloodhound
+      POSTGRES_PASSWORD: &pg bloodhoundcommunityedition
+      POSTGRES_DB: bloodhound
+    volumes: [ "hemo-bh-postgres:/var/lib/postgresql/data" ]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bloodhound -d bloodhound"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  graph-db:
+    image: ${NEO4J_IMAGE}
+    environment:
+      NEO4J_AUTH: neo4j/bloodhoundcommunityedition
+    volumes: [ "hemo-bh-neo4j:/data" ]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  bloodhound:
+    image: ${BHE_IMAGE}
+    ports: [ "127.0.0.1:8080:8080" ]
+    environment:
+      bhe_disable_cypher_complexity_limit: "false"
+      bhe_enable_cypher_mutations: "false"
+      bhe_database_connection: "user=bloodhound password=bloodhoundcommunityedition dbname=bloodhound host=app-db"
+      bhe_neo4j_connection: "neo4j://neo4j:bloodhoundcommunityedition@graph-db:7687/"
+    depends_on:
+      app-db: { condition: service_healthy }
+      graph-db: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  hemo-bh-postgres:
+  hemo-bh-neo4j:
+EOF
+  echo "  wrote $COMPOSE"
+}
+
+case "${1:-status}" in
+  up)
+    need_docker; write_compose
+    echo "[hemo-bloodhound] starting CE stack (first run pulls images, be patient)…"
+    dc -f "$COMPOSE" up -d
+    echo "[hemo-bloodhound] UI: $URL  (user: admin)"
+    echo "  initial password:  hemo-bloodhound password"
+    ;;
+  down)
+    need_docker; dc -f "$COMPOSE" down; echo "[hemo-bloodhound] stopped (data kept)";;
+  status)
+    need_docker; dc -f "$COMPOSE" ps 2>/dev/null || echo "not initialised — run: hemo-bloodhound up";;
+  url) echo "$URL";;
+  password|passwd|pass)
+    need_docker
+    echo "[hemo-bloodhound] searching container logs for the initial password…"
+    dc -f "$COMPOSE" logs bloodhound 2>/dev/null | grep -i -m1 "Initial Password" \
+      || echo "  not found — the password is only logged on the very first start,"
+    echo "  (if you've already logged in and changed it, this won't appear)";;
+  destroy)
+    need_docker
+    printf "This DELETES all BloodHound data (both volumes). Type 'yes': "; read -r a
+    [ "$a" = yes ] || { echo "aborted"; exit 0; }
+    dc -f "$COMPOSE" down -v; echo "[hemo-bloodhound] stack + data removed";;
+  *) echo "usage: hemo-bloodhound [up|down|status|url|password|destroy]"; exit 1;;
+esac

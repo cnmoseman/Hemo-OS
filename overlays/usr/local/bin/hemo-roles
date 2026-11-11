@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# hemo-roles — the role picker.
+#
+# Runs on FIRST BOOT (from the hemo-firstboot oneshot, on the console before the
+# login screen) and any time later as `sudo hemo-roles` to add more roles.
+#
+# Multi-select: every ticked role installs its tools (online, now). The role you
+# mark PRIMARY drives the theme — wallpaper, accent, Firefox bookmark folders.
+# Change the primary later with `hemo-theme <role>`.
+#
+# Needs root (it installs packages). Re-execs itself under sudo if not.
+set -uo pipefail
+
+[ "$(id -u)" -eq 0 ] || exec sudo -E "$0" "$@"
+
+STATE=/var/lib/hemo
+INSTALLED="$STATE/roles"
+FIRSTBOOT="${HEMO_FIRSTBOOT:-0}"
+
+command -v whiptail >/dev/null 2>&1 || { echo "hemo-roles: whiptail missing (apt install whiptail)"; exit 1; }
+command -v hemo-pkg >/dev/null 2>&1 || { echo "hemo-roles: hemo-pkg missing"; exit 1; }
+
+mkdir -p "$STATE"
+already=""
+[ -f "$INSTALLED" ] && already="$(tr '\n' ' ' < "$INSTALLED")"
+
+# Build the checklist from hemo-pkg list-roles  (key \t label \t summary)
+checklist=()
+keys=()
+declare -A rlabel          # key -> label, built once (avoids re-running list-roles)
+while IFS=$'\t' read -r key label summary; do
+  [ -n "$key" ] || continue
+  keys+=("$key")
+  rlabel["$key"]="$label"
+  state=OFF
+  case " $already " in *" $key "*) state=ON ;; esac
+  checklist+=("$key" "$label — $summary" "$state")
+done < <(hemo-pkg list-roles)
+
+[ ${#keys[@]} -gt 0 ] || { echo "hemo-roles: no roles found in manifest"; exit 1; }
+
+title="Hemo — choose your role(s)"
+intro="Space toggles, Enter confirms. Every ticked role installs its tools now\n(needs network). You'll pick which one themes the desktop next."
+[ "$FIRSTBOOT" = 1 ] && intro="Welcome to Hemo.\n\n$intro"
+
+chosen="$(whiptail --title "$title" --separate-output \
+  --checklist "$intro" 22 78 10 \
+  "${checklist[@]}" 3>&1 1>&2 2>&3)" || { echo "cancelled — no changes"; exit 10; }
+
+# chosen is newline-separated role keys (selection order NOT preserved by whiptail)
+mapfile -t sel <<< "$chosen"
+# drop empties
+tmp=(); for s in "${sel[@]}"; do [ -n "$s" ] && tmp+=("$s"); done; sel=("${tmp[@]}")
+
+[ ${#sel[@]} -gt 0 ] || { echo "nothing selected — no changes"; exit 10; }
+
+# PRIMARY: let the operator choose among the selected (checklists lose order).
+if [ ${#sel[@]} -eq 1 ]; then
+  primary="${sel[0]}"
+else
+  radio=()
+  cur="$(cat "$STATE/primary" 2>/dev/null || true)"
+  for s in "${sel[@]}"; do
+    label="${rlabel[$s]}"
+    state=OFF
+    [ "$s" = "$cur" ] && state=ON
+    radio+=("$s" "$label" "$state")
+  done
+  primary="$(whiptail --title "Hemo — primary role" --radiolist \
+    "Which role themes the desktop? (wallpaper / accent / bookmarks)" \
+    18 72 8 "${radio[@]}" 3>&1 1>&2 2>&3)" || primary="${sel[0]}"
+  [ -n "$primary" ] || primary="${sel[0]}"
+fi
+
+echo
+echo "==> roles:   ${sel[*]}"
+echo "==> primary: $primary"
+echo
+
+# Install every selected role's tools (online).
+hemo-pkg install-role "${sel[@]}"
+
+# Role switch: on a later run, offer to keep the current tools or prune the ones
+# that aren't part of the new selection. (prune-candidates reads the roles file,
+# which install-role just updated, and subtracts the new selection's tools.)
+if [ "$FIRSTBOOT" != 1 ]; then
+  mapfile -t cands < <(hemo-pkg prune-candidates "${sel[@]}" 2>/dev/null)
+  if [ ${#cands[@]} -gt 0 ]; then
+    if whiptail --title "Keep your current tools?" \
+         --yes-button "Keep all" --no-button "Choose…" \
+         --yesno "You have ${#cands[@]} tool(s) from previous role(s) that aren't part of your new selection.\n\n\"Keep all\" leaves them installed.\n\"Choose…\" lets you uninstall the ones you don't want." \
+         13 72; then
+      : # keep all — nothing to remove
+    else
+      cl=(); for t in "${cands[@]}"; do cl+=("$t" "" ON); done
+      if keep="$(whiptail --title "Choose tools to keep" --separate-output \
+           --checklist "Ticked = keep. Untick anything to uninstall." \
+           24 76 16 "${cl[@]}" 3>&1 1>&2 2>&3)"; then
+        mapfile -t keeparr <<< "$keep"
+        remove=()
+        for t in "${cands[@]}"; do
+          found=0; for k in "${keeparr[@]}"; do [ "$t" = "$k" ] && { found=1; break; }; done
+          [ "$found" -eq 0 ] && remove+=("$t")
+        done
+        if [ ${#remove[@]} -gt 0 ]; then
+          echo "==> uninstalling: ${remove[*]}"
+          hemo-pkg remove "${remove[@]}"
+          hemo-pkg set-roles "${sel[@]}"   # record the new role set exactly
+        fi
+      fi
+    fi
+  fi
+fi
+
+# Editor opt-in: offer Neovim + LazyVim once, if it isn't set up yet.
+if ! command -v nvim >/dev/null 2>&1; then
+  if whiptail --title "Hemo — editor" --yesno \
+       "Set up Neovim + LazyVim as your editor?\n\nFast terminal code editor (LSP, fuzzy-find, syntax). nano stays for quick/root edits. You can also run 'hemo-lazyvim' later." \
+       13 72; then
+    hemo-lazyvim || echo "[!] editor setup reported an issue"
+  fi
+fi
+
+# Theme the box for the primary. On FIRST BOOT apply the whole profile (the role's
+# defaults are the starting look). On a later run, ask which parts to apply so a
+# custom Appearance color (or any part) can be kept.
+aspects=""
+if [ "$FIRSTBOOT" != 1 ] && [ -f "$STATE/primary" ]; then
+  asel="$(whiptail --title "Hemo — apply '$primary'" --separate-output \
+    --checklist "Which parts of the primary role to apply?\nUnticked parts keep what you have now (e.g. a custom color)." \
+    15 70 4 \
+    color     "Accent color (bar, borders, rofi, terminal)" ON \
+    wallpaper "Desktop wallpaper"                             ON \
+    bookmarks "Firefox bookmark folders"                      ON \
+    icons     "Folder/app icon color"                        ON \
+    3>&1 1>&2 2>&3)" && aspects="$(echo "$asel" | tr '\n' ',' | sed 's/,$//')"
+fi
+if [ -n "$aspects" ]; then
+  hemo-role-apply --aspects "$aspects" "$primary"
+else
+  hemo-role-apply "$primary"
+fi
+
+echo
+echo "Done. Installed roles: $(tr '\n' ' ' < "$INSTALLED" 2>/dev/null)"
+echo "Primary (theme): $primary   —  change later with:  hemo-theme <role>"
+echo "Add more roles later with:  sudo hemo-roles"

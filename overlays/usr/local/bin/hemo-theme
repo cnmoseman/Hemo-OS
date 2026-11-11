@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# hemo-theme — switch which installed role themes the desktop (the PRIMARY).
+#
+# Does NOT install anything; it only re-skins the box (wallpaper, accent,
+# Firefox bookmark folders, i3 workspace names). To install another role's
+# tools, use `hemo-roles`.
+#
+#   hemo-theme            # show current primary + available roles
+#   hemo-theme <role>     # make <role> the primary and re-skin
+#   hemo-theme <role> --all   # skip the "what to change?" prompt, apply everything
+#
+# On a switch it asks which parts of the role to apply (color, wallpaper,
+# bookmarks, icons) so a custom Appearance color (or any part you like) can be
+# kept. Non-interactive (no TTY) or --all applies the whole profile.
+set -uo pipefail
+
+STATE=/var/lib/hemo
+command -v hemo-role-apply >/dev/null 2>&1 || { echo "hemo-theme: hemo-role-apply missing"; exit 1; }
+
+if [ $# -eq 0 ]; then
+  echo "current primary: $(cat "$STATE/primary" 2>/dev/null || echo '(none)')"
+  echo "installed roles: $(tr '\n' ' ' < "$STATE/roles" 2>/dev/null || echo '(none)')"
+  echo
+  echo "available roles:"
+  hemo-pkg list-roles | awk -F'\t' '{printf "  %-14s %s\n", $1, $3}'
+  echo
+  echo "usage: hemo-theme <role>"
+  exit 0
+fi
+
+role="$1"; shift
+all=0
+[ "${1:-}" = "--all" ] && all=1
+
+# warn (don't block) if theming a role whose tools aren't installed
+if [ -f "$STATE/roles" ] && ! grep -qx "$role" "$STATE/roles" 2>/dev/null; then
+  echo "note: role '$role' is not in your installed set — theming only."
+  echo "      install its tools with:  sudo hemo-roles"
+fi
+
+# Ask which parts to apply (keep the rest) when we have a terminal and whiptail.
+aspects=""
+if [ "$all" -eq 0 ] && [ -t 0 ] && [ -t 1 ] && command -v whiptail >/dev/null 2>&1; then
+  sel="$(whiptail --title "hemo-theme — apply '$role'" --separate-output \
+    --checklist "Which parts of this role to apply?\nUnticked parts keep what you have now (e.g. a custom color)." \
+    15 70 4 \
+    color     "Accent color (bar, borders, rofi, terminal)" ON \
+    wallpaper "Desktop wallpaper"                             ON \
+    bookmarks "Firefox bookmark folders"                      ON \
+    icons     "Folder/app icon color"                        ON \
+    3>&1 1>&2 2>&3)" || { echo "cancelled — no changes"; exit 10; }
+  aspects="$(echo "$sel" | tr '\n' ',' | sed 's/,$//')"
+  [ -n "$aspects" ] || { echo "nothing selected — no changes"; exit 10; }
+fi
+
+# hemo-role-apply handles its own root escalation for the Firefox policy file.
+if [ -n "$aspects" ]; then
+  exec hemo-role-apply --theme-only --aspects "$aspects" "$role"
+else
+  exec hemo-role-apply --theme-only "$role"
+fi

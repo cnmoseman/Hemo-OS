@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# hemo-ws-rename — $mod+F2 : rename the focused workspace on the fly.
+# The number is kept as a prefix ("2:web") so $mod+2 still reaches it;
+# an empty name resets it to just the number. Lasts until i3 restarts/logout.
+set -u
+
+ws=$(i3-msg -t get_workspaces | python3 -c 'import json,sys; w=next(w for w in json.load(sys.stdin) if w["focused"]); print(w["num"]); print(w["name"])')
+num=$(sed -n 1p <<<"$ws"); cur=$(sed -n 2p <<<"$ws")
+label=${cur#"$num"}; label=${label#:}
+
+new=$(rofi -dmenu -p "Rename $num" -filter "$label" \
+    -theme-str 'window { width: 340px; } mainbox { children: [inputbar]; } inputbar { children: [prompt, entry]; } prompt { text-color: @accent; } entry { text-color: @fg; placeholder: "empty = just the number"; }' \
+    </dev/null) || exit 0
+new=$(tr -d '"' <<<"$new" | sed 's/^ *//; s/ *$//')
+
+if [ "$num" -lt 0 ]; then target=${new:-$cur}            # unnumbered workspace
+elif [ -n "$new" ]; then target="$num:$new"
+else target=$num; fi
+
+i3-msg -q "rename workspace to \"$target\""

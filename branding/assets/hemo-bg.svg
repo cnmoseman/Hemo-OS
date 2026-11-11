@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
+  <!-- Hemo background (placeholder) for GRUB + login. Dark, faint mascot
+       silhouette (still the earlier swamp toad), wordmark lower-left. Replace freely. -->
+  <defs>
+    <radialGradient id="vig" cx="50%" cy="42%" r="75%">
+      <stop offset="0%"  stop-color="#121a14"/>
+      <stop offset="100%" stop-color="#0a0f0b"/>
+    </radialGradient>
+    <radialGradient id="eyeglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#e9c24a" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#e9c24a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#vig)"/>
+
+  <!-- faint large horned toad on the right -->
+  <g opacity="0.07" transform="translate(1180,170) scale(1.4)">
+    <ellipse cx="256" cy="302" rx="192" ry="150" fill="#ffffff"/>
+    <circle cx="186" cy="190" r="76" fill="#ffffff"/>
+    <circle cx="326" cy="190" r="76" fill="#ffffff"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="150" y="930" font-family="JetBrains Mono, monospace" font-size="72" fill="#e7efe9" letter-spacing="10">HEMO OS</text>
+  <circle cx="725" cy="905" r="9" fill="url(#eyeglow)"/>
+  <circle cx="725" cy="905" r="5" fill="#e9c24a"/>
+  <text x="156" y="978" font-family="JetBrains Mono, monospace" font-size="24" fill="#7f9183" letter-spacing="8">CURATED KALI</text>
+</svg>

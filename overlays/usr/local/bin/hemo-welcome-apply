@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# hemo-welcome-apply — the privileged half of hemo-welcome, run via pkexec.
+# Sequences the first-run build: install the chosen roles, apply the primary
+# theme, and mark first-boot done. Streams progress to the terminal it runs in.
+set -uo pipefail
+
+ROLES=""; PRIMARY=""; CHOOSE=""; ASPECTS=""; REMOVE=""; REPLACE_ROLES=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --roles)   ROLES="$2"; shift 2 ;;
+    --primary) PRIMARY="$2"; shift 2 ;;
+    --aspects) ASPECTS="$2"; shift 2 ;;  # parts of primary to apply (keep the rest)
+    --choose)  CHOOSE="$CHOOSE --choose $2"; shift 2 ;;  # role choice, e.g. c2=sliver
+    --remove)  REMOVE="$2"; shift 2 ;;   # csv of tools to uninstall (role switch prune)
+    --replace-roles) REPLACE_ROLES=1; shift ;;  # record ROLES as the exact installed set
+    --editor)  EDITOR_CHOICE="$2"; shift 2 ;;   # code editor: lazyvim | vscodium | both
+    --term-editor) TERM_EDITOR="$2"; shift 2 ;; # $EDITOR: nano | vim (= Neovim)
+    *) shift ;;
+  esac
+done
+EDITOR_CHOICE="${EDITOR_CHOICE:-}"; TERM_EDITOR="${TERM_EDITOR:-}"
+
+[ "$(id -u)" -eq 0 ] || { echo "hemo-welcome-apply: must run as root (via pkexec)"; exit 1; }
+say(){ printf '\n\033[1;31m[hemo]\033[0m %s\n' "$*"; }
+
+if [ -n "$ROLES" ]; then
+  say "Installing role(s): $ROLES"
+  # shellcheck disable=SC2046
+  hemo-pkg install-role $(echo "$ROLES" | tr ',' ' ') $CHOOSE \
+    || echo "[!] some tools failed to install — see the log above; re-run later with 'sudo hemo-roles'"
+fi
+
+if [ -n "$PRIMARY" ]; then
+  say "Applying primary theme: $PRIMARY"
+  if [ -n "$ASPECTS" ]; then
+    hemo-role-apply --aspects "$ASPECTS" "$PRIMARY" || echo "[!] theme apply reported an issue"
+  else
+    hemo-role-apply "$PRIMARY" || echo "[!] theme apply reported an issue"
+  fi
+fi
+
+# Role switch: uninstall the tools the operator chose not to keep (never base/core
+# — hemo-pkg only removes manifest tools), then record the new role set exactly.
+if [ -n "$REMOVE" ]; then
+  say "Removing tools you chose not to keep: $(echo "$REMOVE" | tr ',' ' ')"
+  # shellcheck disable=SC2046
+  hemo-pkg remove $(echo "$REMOVE" | tr ',' ' ') \
+    || echo "[!] some tools could not be removed — see the log above"
+fi
+if [ "$REPLACE_ROLES" = 1 ] && [ -n "$ROLES" ]; then
+  # shellcheck disable=SC2046
+  hemo-pkg set-roles $(echo "$ROLES" | tr ',' ' ')
+fi
+
+# Base apps the image path can't bake (not in apt): Obsidian. provision.sh handles
+# it from the walkthrough and records notes-choice; with no record (the kali-vm
+# image) it's a default app — install it ONCE here, then record the choice so a
+# later removal sticks.
+if [ ! -f /var/lib/hemo/notes-choice ]; then
+  if ! command -v obsidian >/dev/null 2>&1; then
+    say "Installing Obsidian"
+    hemo-pkg install obsidian || echo "[!] Obsidian install failed — re-run 'sudo hemo-pkg install obsidian'"
+  fi
+  mkdir -p /var/lib/hemo && echo obsidian > /var/lib/hemo/notes-choice
+fi
+
+case "$EDITOR_CHOICE" in
+  lazyvim|both)
+    say "Setting up Neovim + LazyVim"
+    hemo-lazyvim || echo "[!] editor setup reported an issue" ;;
+esac
+case "$EDITOR_CHOICE" in
+  vscodium|both)
+    say "Installing VSCodium"
+    hemo-pkg install vscodium || echo "[!] VSCodium install failed — re-run 'sudo hemo-pkg install vscodium'" ;;
+esac
+if [ -n "$EDITOR_CHOICE" ]; then
+  mkdir -p /var/lib/hemo && echo "$EDITOR_CHOICE" > /var/lib/hemo/editor-choice
+fi
+# $EDITOR lives in the operator's ~/.config/hemo/editor (read by ~/.zshrc).
+if [ -n "$TERM_EDITOR" ]; then
+  op="$(id -nu "${PKEXEC_UID:-${SUDO_UID:-}}" 2>/dev/null)"
+  ophome="$(getent passwd "$op" | cut -d: -f6)"
+  if [ -n "$op" ] && [ "$op" != root ] && [ -d "$ophome" ]; then
+    install -d -o "$op" -g "$op" "$ophome/.config/hemo"
+    echo "$TERM_EDITOR" > "$ophome/.config/hemo/editor" && chown "$op:$op" "$ophome/.config/hemo/editor"
+    say "Terminal editor: $TERM_EDITOR"
+  fi
+fi
+
+mkdir -p /var/lib/hemo && touch /var/lib/hemo/firstboot.done
+say "Build complete. The desktop will re-theme in your session."

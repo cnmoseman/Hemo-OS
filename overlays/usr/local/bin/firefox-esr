@@ -1,0 +1,66 @@
+#!/bin/sh
+# Hemo — sandbox Firefox with bubblewrap (bwrap).
+#
+# PATH precedence (/usr/local/bin before /usr/bin) makes this wrapper intercept
+# `firefox-esr`; it re-launches the REAL binary inside a bwrap sandbox:
+#   * whole filesystem mounted READ-ONLY, so the browser can't write outside...
+#   * ...a writable profile (~/.mozilla), cache (~/.cache/mozilla) and ~/Downloads
+#   * private /tmp, and PID / IPC / UTS isolation
+#   * network + X11 kept (a browser needs them)
+# This is write + process isolation, not full confinement (home stays readable);
+# tighten the binds below if you want stricter isolation.
+#
+# The app-menu entry (rofi) is pointed here too by hemo-firefox-defaults, so
+# every launch path gets the same sandbox and profile.
+#
+# NO --die-with-parent: launchers like hemo-open (Super+B) and rofi exit right
+# after spawning, and that flag SIGKILLed Firefox with them — on a fresh home
+# mid profile creation, leaving a half-built profile Firefox then refused to
+# load ("profile missing or inaccessible").
+#
+# Escape hatches so the sandbox can never *prevent* browsing:
+#   * bwrap missing            -> launches normally
+#   * HEMO_NO_SANDBOX=1 set     -> launches normally
+REAL=/usr/bin/firefox-esr
+FF="$HOME/.mozilla/firefox"
+
+# First launch on a fresh home: seed the profile BEFORE Firefox starts, so the
+# Hemo theme (userChrome/userContent + user.js, written to ~/.config/hemo/firefox
+# by hemo-role-apply) is there on the very first window. Without this, the theme
+# only reached profiles that existed when the role was applied. The [Install...]
+# key is the install-path hash of /usr/lib/firefox-esr; if it ever changes,
+# Firefox just makes its own (unthemed) profile and the next theme apply fixes it.
+seed_profile() {
+    [ -e "$FF/profiles.ini" ] && return 0
+    P="$FF/hemo.default-esr"
+    mkdir -p "$P/chrome" || return 0
+    T="$HOME/.config/hemo/firefox"
+    [ -f "$T/userChrome.css" ] && cp "$T/userChrome.css" "$P/chrome/"
+    [ -f "$T/userContent.css" ] && cp "$T/userContent.css" "$P/chrome/"
+    [ -f "$T/user.js" ] && cp "$T/user.js" "$P/"
+    H=3B6073811A6ABF12
+    printf '[Install%s]\nDefault=hemo.default-esr\nLocked=1\n\n[Profile0]\nName=default-esr\nIsRelative=1\nPath=hemo.default-esr\nDefault=1\n\n[General]\nStartWithLastProfile=1\nVersion=2\n' "$H" > "$FF/profiles.ini"
+    printf '[%s]\nDefault=hemo.default-esr\nLocked=1\n' "$H" > "$FF/installs.ini"
+}
+
+mkdir -p "$HOME/.mozilla" "$HOME/.cache/mozilla" "$HOME/Downloads" 2>/dev/null
+seed_profile
+
+[ -n "$HEMO_NO_SANDBOX" ] && exec "$REAL" "$@"
+command -v bwrap >/dev/null 2>&1 || exec "$REAL" "$@"
+
+U=$(id -u)
+
+exec bwrap \
+  --ro-bind / / \
+  --dev-bind /dev /dev \
+  --proc /proc \
+  --tmpfs /tmp \
+  --ro-bind-try /tmp/.X11-unix /tmp/.X11-unix \
+  --ro-bind-try "$HOME/.Xauthority" "$HOME/.Xauthority" \
+  --ro-bind-try "/run/user/$U" "/run/user/$U" \
+  --bind "$HOME/.mozilla" "$HOME/.mozilla" \
+  --bind "$HOME/.cache/mozilla" "$HOME/.cache/mozilla" \
+  --bind "$HOME/Downloads" "$HOME/Downloads" \
+  --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try \
+  "$REAL" "$@"

@@ -1,0 +1,34 @@
+# Build pipeline outputs / work dirs
+/out/
+/.build/
+*.rootfs.tar
+
+# Logs
+*.log
+hemo-provision.log
+
+# Python caches (overlays helper scripts)
+__pycache__/
+*.py[cod]
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Scratch / temp
+/scratchpad/
+_hp_test.py
+
+# Release signing — the minisign SECRET key must never be committed.
+# Only release/hemo-release.pub (the public key) belongs in the repo.
+*.key
+release/hemo-release.key
+# Release build artifacts (split volumes, checksums, signatures) are uploaded,
+# not committed.
+/release/*.7z.*
+/release/SHA256SUMS
+/release/SHA256SUMS.minisig
+/release/*.ova
+/release/*.ova.sha256

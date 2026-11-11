@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""hemo-edge-art — widen the Hemo login art to any screen size.
+
+    hemo-edge-art OUT W H [SRC] [SIDE]
+
+Splits SRC (default /usr/share/hemo/branding/login-art.png, from branding/wallpapers/Login.png)
+down its blank middle and pins the two flower clusters to the bottom-left and
+bottom-right corners of a W x H canvas, filled with the art's own tan. Each
+side takes at most SIDE of the width (default 0.36), so the middle stays empty
+for the lock-screen ring / greeter box at any aspect ratio. Used by hemo-lock
+and hemo-greeter-bg.
+"""
+import sys
+from PIL import Image
+
+SRC = "/usr/share/hemo/branding/login-art.png"
+
+
+def main(argv):
+    if len(argv) < 4:
+        sys.exit(__doc__.strip().splitlines()[2].strip())
+    out, w, h = argv[1], int(argv[2]), int(argv[3])
+    src = argv[4] if len(argv) > 4 and argv[4] else SRC
+    side = float(argv[5]) if len(argv) > 5 else 0.36
+
+    im = Image.open(src).convert("RGB")
+    sw, sh = im.size
+    cut = sw // 2
+    # canvas tan = the art's own background, sampled from the blank top-middle
+    strip = im.crop((cut - 40, 0, cut + 40, sh // 3)).resize((1, 1), Image.Resampling.BOX)
+    bg = strip.getpixel((0, 0))
+
+    halves = (im.crop((0, 0, cut, sh)), im.crop((cut, 0, sw, sh)))
+    # scale so each half is at most SIDE of the width and never taller than the screen
+    s = min(h / sh, side * w / max(cut, sw - cut))
+    canvas = Image.new("RGB", (w, h), bg)
+    for i, half in enumerate(halves):
+        hw, hh = round(half.width * s), round(half.height * s)
+        half = half.resize((hw, hh), Image.Resampling.LANCZOS)
+        canvas.paste(half, (0 if i == 0 else w - hw, h - hh))
+    canvas.save(out)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

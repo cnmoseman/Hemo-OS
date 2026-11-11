@@ -1,0 +1,266 @@
+# Hemo — tools not in the Kali repo, installed by the Ansible step.
+#
+# PINS: every `ref`/`version` below is set to PIN-ME. On the first build
+# (Phase 0, on the Linux host) we resolve each to a real tag/commit so
+# rebuilds are reproducible. `latest` is never shipped in a tagged release.
+
+pipx:            # isolated Python apps via pipx
+  - name: pywal             # OPT-IN wallpaper-derived theming (hemo-pywal); not in any role
+    version: PIN-ME
+  - name: trevorspray       # blacklanternsecurity/trevorspray — O365/Azure password spraying
+    version: PIN-ME
+  - name: holehe            # email -> which sites it is registered on (OSINT)
+    version: PIN-ME
+  - name: maigret           # username -> accounts across sites (OSINT)
+    version: PIN-ME
+  - name: frida             # dynamic instrumentation toolkit
+    package: frida-tools    # the CLI (frida-ps/-trace/...); bare `frida` is a lib with no apps
+    version: PIN-ME
+  - name: angr              # symbolic execution / binary analysis
+    version: PIN-ME
+  - name: capa              # FLARE capability detection in executables (blue_host)
+    package: flare-capa     # the FLARE package that ships the `capa` CLI; bare `capa` is unrelated
+    version: PIN-ME
+  - name: pacu
+    version: PIN-ME
+  - name: scoutsuite
+    version: PIN-ME
+  - name: prowler
+    version: PIN-ME
+  - name: roadrecon
+    version: PIN-ME
+  - name: bloodyAD          # CravateRouge/bloodyAD
+    version: PIN-ME
+  - name: bloodhound-ce     # BloodHound CE Linux/remote collector; binary bloodhound-ce-python
+    version: PIN-ME
+    note: "CE-compatible SharpHound-equivalent collector (dirkjanm BloodHound.py CE line); confirm exact PyPI name on first build"
+  - name: awscli            # or apt; pipx keeps it current
+    version: PIN-ME
+  - name: azure-cli         # confirm pipx support; else MS apt repo
+    version: PIN-ME
+  # --- internal / AD ---
+  - name: mitm6
+    version: PIN-ME
+  - name: pypykatz
+    version: PIN-ME
+  - name: certsync
+    version: PIN-ME
+  - name: coercer
+    version: PIN-ME
+  - name: donpapi           # DonPAPI — remote DPAPI dumping
+    version: PIN-ME
+    constraints: ["lxml>=6"]   # force a wheel'd lxml; the default pulls an old one that won't build on py3.14
+  - name: lsassy
+    version: PIN-ME
+  - name: adidnsdump
+    version: PIN-ME
+  # --- web ---
+  - name: arjun             # parameter discovery
+    version: PIN-ME
+  - name: name-that-hash    # identify hash types (modern hash-id); binary `nth`
+    version: PIN-ME
+  - name: ldeep             # rich offline LDAP/AD enumeration
+    version: PIN-ME
+  # --- reversing / exploit-dev ---
+  - name: flare-floss       # obfuscated/stacked-string extraction from malware; binary `floss`
+    version: PIN-ME
+  # --- blue / DFIR ---
+  - name: volatility3       # memory forensics (blue_host role)
+    version: PIN-ME
+  # --- payload ---
+
+go:              # `go install`; GOBIN -> /usr/local/bin
+  - name: interactsh-client   # projectdiscovery OAST catcher (not in apt; go tool)
+    package: github.com/projectdiscovery/interactsh/cmd/interactsh-client
+    ref: PIN-ME
+  - name: gowitness
+    package: github.com/sensepost/gowitness
+    ref: PIN-ME
+  - name: cloudfox
+    package: github.com/BishopFox/cloudfox
+    ref: PIN-ME
+  - name: chisel            # if not taken from apt
+    package: github.com/jpillora/chisel
+    ref: PIN-ME
+  - name: kerbrute
+    package: github.com/ropnop/kerbrute
+    ref: PIN-ME
+  - name: azurehound        # SpecterOps/AzureHound — Azure AD collector for BloodHound CE
+    package: github.com/bloodhoundad/azurehound/v2
+    ref: PIN-ME
+  - name: gau               # getallurls
+    package: github.com/lc/gau/v2/cmd/gau
+    ref: PIN-ME
+  - name: dalfox            # XSS scanner
+    package: github.com/hahwul/dalfox/v2
+    ref: PIN-ME
+
+git:             # cloned to /opt, symlinked/aliased as needed
+  - name: discover          # leebaird/discover — recon wrapper scripts
+    repo: https://github.com/leebaird/discover
+    ref: PIN-ME
+    dest: /opt/discover
+  - name: penelope          # brightio/penelope — shell handler (single script)
+    repo: https://github.com/brightio/penelope
+    ref: PIN-ME
+    dest: /opt/penelope
+  - name: PayloadsAllTheThings
+    repo: https://github.com/swisskyrepo/PayloadsAllTheThings
+    ref: PIN-ME
+    dest: /opt/PayloadsAllTheThings
+  - name: PEASS-ng          # winPEAS + linPEAS privesc enumeration
+    repo: https://github.com/peass-ng/PEASS-ng
+    ref: PIN-ME
+    dest: /opt/PEASS-ng
+  - name: SharpCollection   # precompiled .NET offensive tools to drop on targets
+    repo: https://github.com/Flangvik/SharpCollection
+    ref: PIN-ME
+    dest: /opt/SharpCollection
+  - name: jwt_tool          # ticarpi/jwt_tool — JWT attacks
+    repo: https://github.com/ticarpi/jwt_tool
+    ref: PIN-ME
+    dest: /opt/jwt_tool
+  - name: Villain           # t3l3machus/Villain — multi-session handler
+    repo: https://github.com/t3l3machus/Villain
+    ref: PIN-ME
+    dest: /opt/Villain
+  - name: pwndbg            # gdb plugin; run its setup.sh after clone
+    repo: https://github.com/pwndbg/pwndbg
+    ref: PIN-ME
+    dest: /opt/pwndbg
+  - name: graphw00f         # dolevf/graphw00f — GraphQL engine fingerprinting
+    repo: https://github.com/dolevf/graphw00f
+    ref: PIN-ME
+    dest: /opt/graphw00f
+  - name: graphqlmap        # swisskyrepo/GraphQLmap — GraphQL exploitation
+    repo: https://github.com/swisskyrepo/GraphQLmap
+    ref: PIN-ME
+    dest: /opt/GraphQLmap
+  - name: loki              # Neo23x0/Loki — IOC + YARA scanner (NOT the apt 'loki' genetics pkg)
+    repo: https://github.com/Neo23x0/Loki
+    ref: v0.51.0            # Linux runs from source; hemo-pkg sets up a venv + signature-base
+    dest: /opt/Loki
+
+binary:          # pinned release binaries downloaded to /opt or /usr/local/bin
+  - name: hayabusa          # Yamato-Security/hayabusa — Windows EVTX / Sigma hunting (blue_host)
+    repo: https://github.com/Yamato-Security/hayabusa
+    asset: hayabusa-*-lin-x64-gnu.zip     # versioned name -> glob, resolved per release
+    bin: hayabusa-*-lin-x64-gnu
+    keep: true                           # needs its bundled rules/ + config/; links /usr/local/bin/hayabusa
+    ref: PIN-ME
+    dest: /opt/hayabusa
+  - name: velociraptor      # Velocidex/velociraptor — endpoint DFIR (blue_host)
+    repo: https://github.com/Velocidex/velociraptor
+    asset: velociraptor-v*-linux-amd64.gz
+    ref: PIN-ME
+    dest: /usr/local/bin/velociraptor
+  - name: grype             # anchore/grype — SBOM / container vuln scanner (vuln_assessor)
+    repo: https://github.com/anchore/grype
+    asset: grype_*_linux_amd64.tar.gz
+    ref: PIN-ME
+    dest: /usr/local/bin/grype
+  - name: pspy              # DominicBreuker/pspy — pspy64 release asset
+    repo: https://github.com/DominicBreuker/pspy
+    asset: pspy64
+    ref: PIN-ME
+    dest: /opt/pspy64
+  - name: Snaffler          # SnaffCon/Snaffler — Snaffler.exe release asset
+    repo: https://github.com/SnaffCon/Snaffler
+    asset: Snaffler.exe
+    ref: PIN-ME
+    dest: /opt/Snaffler.exe
+  - name: trivy             # aquasecurity/trivy — container/IaC/vuln scanner (vuln_assessor)
+    repo: https://github.com/aquasecurity/trivy
+    asset: trivy_*_Linux-64bit.tar.gz
+    ref: PIN-ME
+    dest: /usr/local/bin/trivy
+  - name: trufflehog        # trufflesecurity/trufflehog — `go install` impossible (replace directives in go.mod), use the release binary
+    repo: https://github.com/trufflesecurity/trufflehog
+    asset: trufflehog_*_linux_amd64.tar.gz
+    ref: PIN-ME
+    dest: /usr/local/bin/trufflehog
+  - name: chainsaw          # WithSecureLabs/chainsaw — EVTX / Sigma hunting (blue_host)
+    repo: https://github.com/WithSecureLabs/chainsaw
+    asset: chainsaw_x86_64-unknown-linux-gnu.tar.gz
+    ref: PIN-ME
+    dest: /usr/local/bin/chainsaw
+  # --- desktop extras (not in apt): vendored release binaries, installed by
+  #     provision.sh / the build's extras step; apt fallbacks are baked (lf, copyq) ---
+  - name: yazi              # sxyazi/yazi — best-in-class TUI file manager (kitty-graphics previews)
+    repo: https://github.com/sxyazi/yazi
+    asset: yazi-x86_64-unknown-linux-musl.zip
+    ref: PIN-ME
+    dest: /usr/local/bin/yazi
+    note: "zip also contains `ya` (plugin mgr); extract both to /usr/local/bin"
+  - name: greenclip         # erebe/greenclip — rofi-native clipboard manager (static binary)
+    repo: https://github.com/erebe/greenclip
+    asset: greenclip
+    ref: PIN-ME
+    dest: /usr/local/bin/greenclip
+
+build:           # cloned AND compiled (needs a build step in Ansible)
+  - name: AdaptixC2         # Adaptix-Framework/AdaptixC2 — Go server + client
+    repo: https://github.com/Adaptix-Framework/AdaptixC2
+    ref: PIN-ME
+    dest: /opt/AdaptixC2
+    note: "built + run in Docker via hemo-adaptix (install_build calls it); Services view manages it"
+  - name: evilginx          # kgretzky/evilginx2 — MFA-bypass phishing proxy
+    repo: https://github.com/kgretzky/evilginx2
+    ref: PIN-ME
+    dest: /opt/evilginx2
+    note: "go build; phishing infra — often on a separate redirector, not the ops VM"
+  - name: sliver            # BishopFox/sliver — official install script
+    source: https://sliver.sh/install
+    ref: PIN-ME
+    note: "server + client; heavier. Use apt if packaged in the snapshot instead."
+  - name: networkminer      # Netresec NetworkMiner Free — PCAP -> artifacts (blue_net)
+    source: https://www.netresec.com/?download=NetworkMiner
+    ref: PIN-ME
+    dest: /opt/NetworkMiner
+    note: "free edition zip, run under mono (apt mono-runtime); confirm download URL/version"
+
+deb:             # pinned .deb / repo installs (GUI apps not in Kali)
+  - name: vscodium
+    method: repo        # paulcarroty VSCodium apt repo; opt-in at setup (instead of / with LazyVim)
+    version: PIN-ME
+  - name: obsidian      # baked: provision.sh, and hemo-welcome-apply on the image path
+    method: deb         # pinned .deb from GitHub releases (obsidianmd/obsidian-releases)
+    version: 1.14.4
+    source: https://github.com/obsidianmd/obsidian-releases/releases/download/v{version}/obsidian_{version}_amd64.deb
+  - name: docker
+    method: repo        # docker.io from Kali, or docker-ce repo
+    version: PIN-ME
+  - name: starship
+    method: binary      # pinned release tarball -> /usr/local/bin
+    version: PIN-ME
+  - name: caido           # modern Rust intercepting proxy (lighter Burp alt); CLI + desktop
+    method: binary      # pinned release from GitHub (caido/caido) or caido.io — CONFIRM download URL
+    version: PIN-ME
+  - name: osquery         # endpoint telemetry / live IR queries (blue_host)
+    method: repo        # osquery apt repo (pkg.osquery.io) or pinned .deb — CONFIRM source
+    version: PIN-ME
+
+firefox_addons:  # force-installed via Firefox enterprise policy:
+                 #   overlays/etc/firefox-esr/policies/policies.json
+                 # The policy also sets the toolbar bookmark folders
+                 # (Recon / AD / Web & API / Cloud / Creds & Crypto / Exploits & CVEs / Playbooks / Blue Team / Practice Targets / People Search)
+                 # + privacy hardening
+                 # (telemetry/Pocket/DoH off, HTTPS-only off for testing, import system CA).
+  - name: FoxyProxy Standard
+    id: "foxyproxy@eric.h.jung"
+    note: "proxy switching for Burp / mitmproxy"
+  - name: Cookie-Editor
+    id: "{c3c10168-4186-445c-9c5b-63f12b8e2c87}"
+    note: "view / edit / export cookies"
+  - name: HackTools
+    id: "{f1423c11-a4e2-4709-a0f8-6d6a68c83d08}"
+    note: "in-browser payloads, reverse shells, cheatsheets"
+  - name: Wappalyzer
+    id: "wappalyzer@crunchlabz.com"
+    note: "tech-stack fingerprinting (has own telemetry/account prompts — optional)"
+  - name: User-Agent Switcher and Manager
+    id: "{a6c4a591-f1b2-4f03-b3ff-767e5bedf4e7}"
+    note: "spoof UA strings"
+  - name: Wayback Machine
+    id: "wayback_machine@mozilla.org"
+    note: "recon: archived versions of target pages"

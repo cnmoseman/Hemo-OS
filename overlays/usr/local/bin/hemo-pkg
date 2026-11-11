@@ -1,0 +1,1090 @@
+#!/usr/bin/env python3
+"""hemo-pkg — resolve a tool name to its install method and install it.
+
+This is the engine behind the first-boot role picker (see `hemo-roles`). In the
+rolling-tools model the baked image ships only a thin core; every offensive /
+defensive tool installs ONLINE when its role is selected. This script is the
+one place that knows *how* to install a given name:
+
+    apt      -> apt-get                (manifest/apt.yml, any section)
+    pipx     -> pipx install           (manifest/extra.yml: pipx)
+    go       -> go install             (manifest/extra.yml: go)
+    git      -> git clone -> /opt      (manifest/extra.yml: git)
+    binary   -> release asset download (manifest/extra.yml: binary)
+    build    -> clone + compile        (manifest/extra.yml: build)
+    deb      -> repo / .deb / tarball  (manifest/extra.yml: deb)
+
+Manifests are read from $HEMO_MANIFEST_DIR (default /usr/share/hemo/manifest),
+so the same files that live in the repo are the single source of truth on the
+running system.
+
+SOURCE SEAM (offline mode, later): resolution is split from fetching. Today
+every method fetches from the internet. An offline backend can later populate
+from a baked pinned cache without roles.yml / the menu changing.
+
+Usage:
+    hemo-pkg list-roles                 # key<TAB>label<TAB>summary  (for the menu)
+    hemo-pkg role-tools  <role>...      # expand roles -> deduped tool list
+    hemo-pkg resolve     <tool>...      # tool<TAB>method<TAB>detail
+    hemo-pkg install     <tool>...      # install individual tools (root)
+    hemo-pkg install-role <role>...     # expand + install + record roles (root)
+    hemo-pkg remove      <tool>...      # remove tools (root; manifest tools only)
+    hemo-pkg installed-tools            # tools of the currently-installed roles
+    hemo-pkg prune-candidates <role>    # installed tools NOT in <role> (switch set)
+    hemo-pkg profile     <role> <field> # accent|wallpaper|bookmarks
+
+PINS: extra.yml carries a ref/version per tool. In the rolling model an
+unresolved PIN-ME means "use latest/HEAD"; a real tag/commit is honoured when
+present (fragile build-from-source tools are the ones worth pinning).
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write(
+        "hemo-pkg: PyYAML missing. Install it with:  apt-get install -y python3-yaml\n"
+    )
+    sys.exit(2)
+
+MANIFEST_DIR = os.environ.get("HEMO_MANIFEST_DIR", "/usr/share/hemo/manifest")
+# role choice overrides, e.g. {"c2": "sliver"}, set from `--choose key=value`
+CHOICES: dict = {}
+STATE_DIR = "/var/lib/hemo"
+OPT = "/opt/hemo"
+GOBIN = "/usr/local/bin"
+GOPATH = "/opt/go"
+PIPX_HOME = "/opt/pipx"
+PIPX_BIN = "/usr/local/bin"
+
+RED = "\033[1;31m"
+GRN = "\033[1;32m"
+YEL = "\033[1;33m"
+BLU = "\033[34m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+OFF = "\033[0m"
+
+# When the install panel is drawing (QUIET), these status lines would corrupt its
+# redraw, so they go to the child log instead of the screen. CHILD_OUT also
+# collects each tool's apt/build output when the panel is up (set by the panel).
+CHILD_LOG = "/var/log/hemo-pkg.log"
+_QUIET = False
+_CHILD_OUT = None
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _write(line: str) -> None:
+    if _QUIET:
+        if _CHILD_OUT is not None:
+            try:
+                _CHILD_OUT.write(_ANSI_RE.sub("", line) + "\n")
+                _CHILD_OUT.flush()
+            except Exception:
+                pass
+    else:
+        sys.stderr.write(line + "\n")
+
+
+def log(msg: str) -> None:
+    _write(f"{RED}[hemo-pkg]{OFF} {msg}")
+
+
+def ok(msg: str) -> None:
+    _write(f"  {GRN}+{OFF} {msg}")
+
+
+def bad(msg: str) -> None:
+    _write(f"  {RED}!{OFF} {msg}")
+
+
+def info(msg: str) -> None:
+    _write(f"  {DIM}{msg}{OFF}")
+
+
+# ---------------------------------------------------------------- manifest load
+def _load(name: str, soft: bool = False) -> dict:
+    path = os.path.join(MANIFEST_DIR, name)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        if soft:
+            return {}   # presentation-only manifest (phases.yml): absence is harmless
+        log(f"manifest not found: {path}")
+        sys.exit(2)
+
+
+def load_apt() -> dict:
+    return _load("apt.yml")
+
+
+def load_extra() -> dict:
+    return _load("extra.yml")
+
+
+def load_roles() -> dict:
+    data = _load("roles.yml")
+    return data.get("roles", {}) or {}
+
+
+def _pinned(ref) -> str | None:
+    """Return a usable ref, or None when it is unset / still PIN-ME."""
+    if not ref:
+        return None
+    s = str(ref).strip()
+    if not s or s.upper() == "PIN-ME":
+        return None
+    return s
+
+
+# ---------------------------------------------------------------- resolution
+def resolve(tool: str):
+    """Return (method, detail-dict) for a tool name, or (None, None)."""
+    # apt: any section list (exact match on the package entry)
+    for section, pkgs in load_apt().items():
+        if not isinstance(pkgs, list):
+            continue
+        for p in pkgs:
+            if isinstance(p, str) and p == tool:
+                return "apt", {"pkg": tool, "section": section}
+
+    extra = load_extra()
+
+    def find(section, key="name"):
+        for item in extra.get(section, []) or []:
+            if isinstance(item, dict) and item.get(key) == tool:
+                return item
+        # case-insensitive fallback
+        for item in extra.get(section, []) or []:
+            if isinstance(item, dict) and str(item.get(key, "")).lower() == tool.lower():
+                return item
+        return None
+
+    for section in ("pipx", "go", "git", "binary", "build", "deb"):
+        item = find(section)
+        if item:
+            return section, item
+
+    return None, None
+
+
+# ---------------------------------------------------------------- shell helpers
+def _child_out():
+    """Where a child's stdout/stderr go: the panel's log when it's drawing (so the
+    redraw stays clean but nothing is lost), otherwise discarded as before."""
+    return _CHILD_OUT if _CHILD_OUT is not None else subprocess.DEVNULL
+
+
+def run(cmd, **kw) -> int:
+    """Run a command list, return exit code. Output goes to the child log (panel)
+    or is discarded."""
+    out = _child_out()
+    kw.setdefault("stdout", out)
+    kw.setdefault("stderr", subprocess.STDOUT if out is not subprocess.DEVNULL else subprocess.DEVNULL)
+    try:
+        return subprocess.call(cmd, **kw)
+    except OSError as exc:
+        bad(f"{' '.join(cmd) if isinstance(cmd, list) else cmd}: {exc}")
+        return 127
+
+
+def shell(cmd: str) -> int:
+    out = _child_out()
+    err = subprocess.STDOUT if out is not subprocess.DEVNULL else subprocess.DEVNULL
+    try:
+        return subprocess.call(cmd, shell=True, stdout=out, stderr=err)
+    except OSError as exc:
+        bad(f"{cmd}: {exc}")
+        return 127
+
+
+# ---------------------------------------------------------------- installers
+def _apt_ready():
+    if not os.environ.get("HEMO_APT_UPDATED"):
+        log("apt-get update")
+        run(["apt-get", "update", "-y"])
+        os.environ["HEMO_APT_UPDATED"] = "1"
+
+
+def install_apt(tool, d) -> bool:
+    _apt_ready()
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    if d["pkg"] == "wireshark":
+        # let non-root users capture (dumpcap via the wireshark group), not just root
+        subprocess.run(["debconf-set-selections"], input=b"wireshark-common "
+                       b"wireshark-common/install-setuid boolean true\n",
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rc = run(["apt-get", "install", "-y", "--no-install-recommends", d["pkg"]], env=env)
+    if rc == 0 and d["pkg"] == "wireshark":
+        _join_group("wireshark")
+    return rc == 0
+
+
+def _join_group(group):
+    """Add every human login (uid 1000-59999) to `group` — takes effect at next login."""
+    import pwd
+    for u in pwd.getpwall():
+        if 1000 <= u.pw_uid < 60000 and os.path.isdir(u.pw_dir):
+            run(["usermod", "-aG", group, u.pw_name])
+
+
+def install_pipx(tool, d) -> bool:
+    env = dict(os.environ, PIPX_HOME=PIPX_HOME, PIPX_BIN_DIR=PIPX_BIN)
+    # `package:` overrides the pip spec while the tool keeps its short `name`
+    # (e.g. frida -> frida-tools, capa -> flare-capa). Falls back to the name.
+    spec = d.get("package") or d["name"]
+    ver = _pinned(d.get("version"))
+    if ver:
+        spec = f"{spec}=={ver}"
+    # optional `constraints:` pin transitive deps (e.g. force an lxml that has a
+    # wheel for this Python, so pip doesn't try — and fail — to build an old one)
+    cons = d.get("constraints") or []
+    tmp = None
+    if cons:
+        fd, tmp = tempfile.mkstemp(prefix="hemo-constraints-", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(cons) + "\n")
+        env["PIP_CONSTRAINT"] = tmp
+    try:
+        return run(["pipx", "install", spec], env=env) == 0
+    finally:
+        if tmp:
+            os.unlink(tmp)
+
+
+def install_go(tool, d) -> bool:
+    os.makedirs(GOPATH, exist_ok=True)
+    env = dict(os.environ, GOBIN=GOBIN, GOPATH=GOPATH)
+    ref = _pinned(d.get("ref")) or "latest"
+    return run(["go", "install", f"{d['package']}@{ref}"], env=env) == 0
+
+
+def install_git(tool, d) -> bool:
+    dest = d.get("dest") or os.path.join(OPT, d["name"])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if not os.path.isdir(os.path.join(dest, ".git")):
+        if run(["git", "clone", "--depth", "1", d["repo"], dest]) != 0:
+            return False
+    ref = _pinned(d.get("ref"))
+    if ref:
+        run(["git", "-C", dest, "fetch", "--depth", "1", "origin", ref])
+        run(["git", "-C", dest, "checkout", ref])
+    # pwndbg needs its setup after clone
+    if d["name"].lower() == "pwndbg" and os.path.exists(os.path.join(dest, "setup.sh")):
+        shell(f"cd {dest} && ./setup.sh")
+    # Loki runs from source on Linux: a venv for its deps, the signature-base, and
+    # a /usr/local/bin/loki wrapper. (The GitHub release ships Windows binaries only.)
+    if d["name"].lower() == "loki":
+        venv = os.path.join(dest, ".venv")
+        py = os.path.join(venv, "bin", "python")
+        run(["python3", "-m", "venv", venv])
+        req = os.path.join(dest, "requirements.txt")
+        if os.path.exists(req):
+            run([os.path.join(venv, "bin", "pip"), "install", "-q", "-r", req])
+        up = os.path.join(dest, "loki-upgrader.py")
+        if os.path.exists(up):
+            run([py, up])          # fetch signature-base (needs network; best-effort)
+        with open("/usr/local/bin/loki", "w") as fh:
+            fh.write(f'#!/bin/sh\n# run Loki as root for a full scan: sudo loki -p /path\n'
+                     f'exec {py} {os.path.join(dest, "loki.py")} "$@"\n')
+        os.chmod("/usr/local/bin/loki", 0o755)
+    return True
+
+
+def _gh_url(repo: str, asset: str, ref: str | None) -> str:
+    repo = repo.rstrip("/")
+    if ref:
+        return f"{repo}/releases/download/{ref}/{asset}"
+    return f"{repo}/releases/latest/download/{asset}"
+
+
+def _gh_asset(repo: str, pattern: str, ref: str | None) -> str | None:
+    """Download URL of the release asset matching a glob `pattern` (most release
+    assets carry the version in their name, e.g. grype_*_linux_amd64.tar.gz).
+    Looks at the `ref` tag's release, else the latest one, via the GitHub API."""
+    import fnmatch, json, urllib.request
+    slug = repo.rstrip("/").split("github.com/", 1)[-1]
+    rel = f"tags/{ref}" if ref else "latest"
+    req = urllib.request.Request(f"https://api.github.com/repos/{slug}/releases/{rel}",
+                                 headers={"Accept": "application/vnd.github+json",
+                                          "User-Agent": "hemo-pkg"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            assets = json.load(r).get("assets", [])
+    except Exception as ex:          # offline, rate-limited, no such release
+        bad(f"{slug}: could not list release assets ({ex})")
+        return None
+    for a in assets:
+        if fnmatch.fnmatch(a.get("name", ""), pattern):
+            return a.get("browser_download_url")
+    bad(f"{slug}: no release asset matches '{pattern}'")
+    return None
+
+
+def _asset_url(d) -> str | None:
+    """Exact asset names go straight to the download URL; globs are resolved."""
+    ref = _pinned(d.get("ref"))
+    if any(c in d["asset"] for c in "*?["):
+        return _gh_asset(d["repo"], d["asset"], ref)
+    return _gh_url(d["repo"], d["asset"], ref)
+
+
+def install_binary(tool, d) -> bool:
+    """Download a release asset. Optional keys:
+      bin:  glob for the executable inside an archive (default: basename of dest)
+      keep: true -> dest is a DIRECTORY that receives the whole archive (tools that
+            need their bundled rules/config beside the binary); the executable is
+            symlinked to /usr/local/bin/<name>."""
+    import fnmatch
+    dest = d["dest"]
+    asset = d["asset"]
+    keep = bool(d.get("keep"))
+    url = _asset_url(d)
+    if not url:
+        return False
+    os.makedirs(dest if keep else os.path.dirname(dest), exist_ok=True)
+
+    # Recognise the common release-archive suffixes. A bare binary asset
+    # (e.g. greenclip) has none of these and is curl'd straight to dest; a bare
+    # .gz (e.g. velociraptor) is one gzipped binary.
+    def _extract(path, into):
+        if asset.endswith((".tar.gz", ".tgz")):  return run(["tar", "-xzf", path, "-C", into]) == 0
+        if asset.endswith((".tar.xz", ".txz")):   return run(["tar", "-xJf", path, "-C", into]) == 0
+        if asset.endswith(".tar.bz2"):             return run(["tar", "-xjf", path, "-C", into]) == 0
+        if asset.endswith(".tar"):                 return run(["tar", "-xf", path, "-C", into]) == 0
+        if asset.endswith(".zip"):                 return run(["unzip", "-qo", path, "-d", into]) == 0
+        return False
+
+    is_archive = asset.endswith(
+        (".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tar", ".zip"))
+    if is_archive:
+        with tempfile.TemporaryDirectory() as tmp:
+            arc = os.path.join(tmp, "asset.download")
+            out = os.path.join(tmp, "x")
+            os.makedirs(out)
+            if run(["curl", "-fsSL", url, "-o", arc]) != 0:
+                return False
+            if not _extract(arc, out):
+                bad(f"{tool}: could not extract {asset} (need tar/unzip)")
+                return False
+            want = d.get("bin") or os.path.basename(dest)
+            found = None
+            for root, _dirs, files in os.walk(out):
+                hit = fnmatch.filter(files, want)
+                if hit:
+                    found = os.path.join(root, hit[0])
+                    break
+            if not found:
+                bad(f"{tool}: '{want}' not found inside {asset}")
+                return False
+            if keep:
+                # replace the old tree wholesale (stale rules from an older release go)
+                _rm(dest)
+                shutil.move(out, dest)
+                exe = os.path.join(dest, os.path.relpath(found, out))
+                os.chmod(exe, 0o755)
+                link = os.path.join("/usr/local/bin", d["name"].lower())
+                if os.path.lexists(link):
+                    os.remove(link)
+                os.symlink(exe, link)
+                return True
+            shutil.move(found, dest)
+    elif asset.endswith(".gz"):
+        with tempfile.TemporaryDirectory() as tmp:
+            gz = os.path.join(tmp, "asset.gz")
+            if run(["curl", "-fsSL", url, "-o", gz]) != 0:
+                return False
+            import gzip
+            try:
+                with gzip.open(gz, "rb") as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+            except OSError:
+                bad(f"{tool}: could not gunzip {asset}")
+                return False
+    else:
+        if run(["curl", "-fsSL", url, "-o", dest]) != 0:
+            return False
+    os.chmod(dest, 0o755)
+    return True
+
+
+def install_build(tool, d) -> bool:
+    """Best-effort compile-from-source for the few heavy tools in the `build`
+    section. These are the fragile ones worth pinning; a failure here is
+    non-fatal and prints how to finish by hand."""
+    name = d["name"].lower()
+    ref = _pinned(d.get("ref"))
+
+    if name == "sliver":
+        src = d.get("source", "https://sliver.sh/install")
+        return shell(f"curl -fsSL {src} | bash") == 0
+
+    if name == "evilginx":
+        dest = d.get("dest", "/opt/evilginx2")
+        if not os.path.isdir(dest):
+            if run(["git", "clone", "--depth", "1", d["repo"], dest]) != 0:
+                return False
+        if ref:
+            run(["git", "-C", dest, "checkout", ref])
+        env = dict(os.environ, GOBIN=GOBIN, GOPATH=GOPATH)
+        return shell(f"cd {dest} && go build -o /usr/local/bin/evilginx .") == 0 or \
+            _manual(tool, "go build per upstream README")
+
+    if name == "adaptixc2":
+        # upstream build is involved (Go server + extenders + Qt client); build it
+        # entirely in Docker via the hemo-adaptix helper (no Go/Qt on the host).
+        if shutil.which("hemo-adaptix") and shell("hemo-adaptix build") == 0:
+            return True
+        return _manual(tool, "build in Docker with: hemo-adaptix build (needs docker)")
+
+    if name == "networkminer":
+        dest = d.get("dest", "/opt/NetworkMiner")
+        return _manual(
+            tool,
+            f"download NetworkMiner Free from {d.get('source','netresec.com')}, "
+            f"unzip to {dest}, run under mono (apt mono-runtime)",
+        )
+
+    # unknown build recipe: clone if we can, then hand off
+    if d.get("repo"):
+        dest = d.get("dest", os.path.join(OPT, d["name"]))
+        if not os.path.isdir(dest):
+            run(["git", "clone", "--depth", "1", d["repo"], dest])
+        return _manual(tool, f"build per README in {dest}")
+    return _manual(tool, "no automated recipe")
+
+
+def install_deb(tool, d) -> bool:
+    name = d["name"].lower()
+    method = d.get("method", "")
+
+    if name == "vscodium":
+        shell("wget -qO /usr/share/keyrings/vscodium.gpg.key "
+              "https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg")
+        with open("/etc/apt/sources.list.d/vscodium.list", "w") as fh:
+            fh.write("deb [signed-by=/usr/share/keyrings/vscodium.gpg.key] "
+                     "https://download.vscodium.com/debs vscodium main\n")
+        run(["apt-get", "update", "-y"])
+        return run(["apt-get", "install", "-y", "--no-install-recommends", "codium"]) == 0
+
+    if name == "docker":
+        _apt_ready()
+        return run(["apt-get", "install", "-y", "--no-install-recommends", "docker.io"]) == 0
+
+    if name == "starship":
+        return shell("curl -sS https://starship.rs/install.sh | sh -s -- -y") == 0
+
+    if name == "obsidian":
+        ver = str(d.get("version", ""))
+        src = d.get("source", "")
+        if not ver or ver == "PIN-ME" or not src:
+            return _manual(tool, "pin a version + source in extra.yml (obsidianmd/obsidian-releases)")
+        _apt_ready()
+        with tempfile.TemporaryDirectory() as tmp:
+            deb = os.path.join(tmp, f"obsidian_{ver}_amd64.deb")
+            if run(["curl", "-fsSL", "-o", deb, src.format(version=ver)]) != 0:
+                return False
+            return run(["apt-get", "install", "-y", deb],
+                       env=dict(os.environ, DEBIAN_FRONTEND="noninteractive")) == 0
+
+    return _manual(tool, f"deb method '{method}' not automated")
+
+
+def _manual(tool, hint) -> bool:
+    bad(f"{tool}: needs a manual step — {hint}")
+    return False
+
+
+INSTALLERS = {
+    "apt": install_apt,
+    "pipx": install_pipx,
+    "go": install_go,
+    "git": install_git,
+    "binary": install_binary,
+    "build": install_build,
+    "deb": install_deb,
+}
+
+
+# ---------------------------------------------------------------- removers
+# Reverse each install method. Conservative on purpose: apt packages are purged
+# by name only (NO autoremove — that can pull shared libs other tools still
+# need). git/binary/build artefacts are deleted from /opt or /usr/local/bin.
+def _rm(path) -> None:
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.lexists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def remove_apt(tool, d) -> bool:
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    return run(["apt-get", "purge", "-y", d["pkg"]], env=env) == 0
+
+
+def remove_pipx(tool, d) -> bool:
+    env = dict(os.environ, PIPX_HOME=PIPX_HOME, PIPX_BIN_DIR=PIPX_BIN)
+    return run(["pipx", "uninstall", d["name"]], env=env) == 0
+
+
+def remove_go(tool, d) -> bool:
+    # go install drops a binary named after the package's last path element
+    name = os.path.basename(d["package"].rstrip("/"))
+    gone = False
+    for cand in {name, tool}:
+        p = os.path.join(GOBIN, cand)
+        if os.path.lexists(p):
+            _rm(p); gone = True
+    return gone
+
+
+def remove_git(tool, d) -> bool:
+    dest = d.get("dest") or os.path.join(OPT, d["name"])
+    _rm(dest)
+    return not os.path.lexists(dest)
+
+
+def remove_binary(tool, d) -> bool:
+    if d.get("keep"):                    # dir install: drop its /usr/local/bin link too
+        link = os.path.join("/usr/local/bin", d["name"].lower())
+        if os.path.islink(link):
+            os.remove(link)
+    _rm(d["dest"])
+    return not os.path.lexists(d["dest"])
+
+
+def remove_build(tool, d) -> bool:
+    name = d["name"].lower()
+    if name == "adaptixc2":
+        # tear down the docker images/volumes non-interactively, then the clone
+        if shutil.which("hemo-adaptix"):
+            shell("yes | hemo-adaptix destroy")
+        _rm("/opt/hemo/adaptix")
+        return True
+    if name == "evilginx":
+        _rm(d.get("dest", "/opt/evilginx2")); _rm(os.path.join(GOBIN, "evilginx"))
+        return True
+    # generic: delete the cloned/built dir if we know it
+    dest = d.get("dest") or os.path.join(OPT, d["name"])
+    _rm(dest)
+    log(f"{tool}: removed {dest} (any installed binary may need manual cleanup)")
+    return True
+
+
+def remove_deb(tool, d) -> bool:
+    name = d["name"].lower()
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    if name == "vscodium":
+        return run(["apt-get", "purge", "-y", "codium"], env=env) == 0
+    if name == "docker":
+        return run(["apt-get", "purge", "-y", "docker.io"], env=env) == 0
+    if name == "starship":
+        _rm(os.path.join(GOBIN, "starship")); return True
+    if name == "obsidian":
+        return run(["apt-get", "purge", "-y", "obsidian"], env=env) == 0
+    log(f"{tool}: no automated removal for deb method — remove by hand if needed")
+    return False
+
+
+REMOVERS = {
+    "apt": remove_apt,
+    "pipx": remove_pipx,
+    "go": remove_go,
+    "git": remove_git,
+    "binary": remove_binary,
+    "build": remove_build,
+    "deb": remove_deb,
+}
+
+
+def remove_tools(tools) -> list:
+    """Remove a list of tool names. Returns names that failed / were unknown.
+    Only manifest-known tools are touched — base/core packages are never here."""
+    if os.geteuid() != 0:
+        log("remove must run as root (apt / /opt / /usr/local/bin)")
+        sys.exit(1)
+    failed = []
+    for tool in tools:
+        method, d = resolve(tool)
+        if not method:
+            bad(f"{tool}: not a known tool — skipped (never touch non-manifest packages)")
+            failed.append(tool)
+            continue
+        try:
+            if REMOVERS[method](tool, d):
+                ok(f"removed {tool} [{method}]")
+            else:
+                bad(f"{tool} [{method}] not removed")
+                failed.append(tool)
+        except Exception as exc:
+            bad(f"{tool} [{method}] error: {exc}")
+            failed.append(tool)
+    return failed
+
+
+# ---------------------------------------------------------------- install panel
+FALLBACK_PHASE = "Setup & tooling"
+SPIN = "◐◓◑◒"
+
+
+def load_phases(role=None):
+    """Ordered phase names + a tool->phase index, from manifest/phases.yml. With a
+    `role` that has a `role_phases:` override, use that grouping (reverse / blue_*);
+    otherwise the default `phases:`. Missing file is fine — every tool then lands in
+    the fallback phase."""
+    data = _load("phases.yml", soft=True)
+    groups = None
+    if role:
+        groups = (data.get("role_phases") or {}).get(role)
+    if groups is None:
+        groups = data.get("phases") or []
+    order, index = [], {}
+    for p in groups:
+        name = p.get("name")
+        if not name:
+            continue
+        order.append(name)
+        for t in (p.get("tools") or []):
+            index[str(t).lower()] = name
+    return order, index
+
+
+def _phase_override_roles():
+    return set((_load("phases.yml", soft=True).get("role_phases") or {}).keys())
+
+
+class Panel:
+    """A redraw-in-place install panel (role header, progress bar, current tool,
+    per-phase tally). Only used on a TTY; everything is written to stderr and the
+    whole block is cleared + reprinted on each update."""
+    WIDTH = 28  # progress-bar columns
+
+    def __init__(self, title, tools, order, index):
+        self.title = title
+        self.total = len(tools)
+        self.done = 0
+        self.failed = []
+        self.cur = ""
+        self.cur_method = ""
+        self.tick = 0
+        self.start = time.monotonic()
+        self.height = 0
+        self.index = index
+        counts = {}
+        for t in tools:
+            ph = index.get(str(t).lower(), FALLBACK_PHASE)
+            counts.setdefault(ph, {"total": 0, "ok": 0, "fail": 0, "active": False})
+            counts[ph]["total"] += 1
+        self.ph = counts
+        self.order = [p for p in order if p in counts]
+        if FALLBACK_PHASE in counts:
+            self.order.append(FALLBACK_PHASE)
+
+    def _phase(self, tool):
+        return self.index.get(str(tool).lower(), FALLBACK_PHASE)
+
+    def start_tool(self, tool, method):
+        self.cur, self.cur_method = tool, method
+        for v in self.ph.values():
+            v["active"] = False
+        self.ph[self._phase(tool)]["active"] = True
+        self.tick += 1
+        self._render()
+
+    def finish_tool(self, tool, good):
+        st = self.ph[self._phase(tool)]
+        self.done += 1
+        st["ok" if good else "fail"] += 1
+        if not good:
+            self.failed.append(tool)
+        self._render()
+
+    def _bar(self, pct):
+        fill = max(0, min(self.WIDTH, round(self.WIDTH * pct / 100)))
+        return f"{RED}{'█' * fill}{OFF}{DIM}{'░' * (self.WIDTH - fill)}{OFF}"
+
+    def _elapsed(self):
+        s = int(time.monotonic() - self.start)
+        return f"{s // 60}m{s % 60:02d}s"
+
+    def _phase_rows(self, final):
+        nw = min(18, max((len(p) for p in self.order), default=6))
+        rows = []
+        for p in self.order:
+            st = self.ph[p]
+            name = p if len(p) <= nw else p[:nw - 1] + "…"
+            cnt = f"{st['ok']}/{st['total']}"
+            if st["fail"]:
+                glyph = f"{RED}{st['fail']}✗{OFF}"
+            elif st["active"] and not final:
+                glyph = f"{YEL}{SPIN[self.tick % len(SPIN)]}{OFF}"
+            elif st["ok"] == st["total"]:
+                glyph = f"{GRN}✓{OFF}"
+            else:
+                glyph = f"{DIM}·{OFF}"
+            rows.append(f"  {name.ljust(nw)}  {cnt:>7} {glyph}")
+        return rows
+
+    def _compose(self, final):
+        pct = int(self.done * 100 / self.total) if self.total else 100
+        state = "ready" if final else "building workstation"
+        lines = [f"{RED}▌{OFF} {BOLD}{self.title}{OFF} {DIM}· {state}{OFF}"]
+        if final:
+            att = len(self.failed)
+            summary = f"{GRN}{self.done - att} installed{OFF}"
+            if att:
+                summary += f" {DIM}·{OFF} {RED}{att} need attention{OFF}"
+            summary += f" {DIM}· {self._elapsed()}{OFF}"
+            lines.append("  " + summary)
+        else:
+            cur = (f"{self.cur} {DIM}({self.cur_method}){OFF}" if self.cur
+                   else f"{DIM}starting…{OFF}")
+            lines.append(f"  {DIM}installing{OFF} {cur}   {DIM}{self.done}/{self.total}{OFF}")
+        lines.append(f"  {self._bar(pct)}  {DIM}{pct}%{OFF}")
+        lines.append("")
+        lines += self._phase_rows(final)
+        lines.append("")
+        if final:
+            if self.failed:
+                show = ", ".join(self.failed[:4]) + ("…" if len(self.failed) > 4 else "")
+                lines.append(f"  {DIM}retry:{OFF} {YEL}sudo hemo-pkg install {show}{OFF}")
+            lines.append(f"  {DIM}theme applies next · full log: {BLU}{CHILD_LOG}{OFF}")
+        else:
+            lines.append(f"  {DIM}log → {CHILD_LOG} · Ctrl-C is safe{OFF}")
+        return lines
+
+    def _render(self, final=False):
+        lines = self._compose(final)
+        buf = ""
+        if self.height:
+            buf += f"\033[{self.height}A\r\033[0J"  # up to panel top, clear to end
+        buf += "\n".join(lines) + "\n"
+        self.height = 0 if final else len(lines)
+        try:
+            sys.stderr.write(buf)
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    def finalize(self, failed):
+        self.failed = failed
+        self._render(final=True)
+
+
+def make_panel(role_args, tools):
+    """A Panel when we're on an interactive terminal (and not disabled), else None
+    so install falls back to plain `+ tool` / `! tool` lines (build logs, ssh)."""
+    global _QUIET, _CHILD_OUT
+    if os.environ.get("HEMO_NO_TUI") or not sys.stderr.isatty():
+        return None
+    roles = load_roles()
+    requested = [a for a in role_args if a in roles]
+    primary = requested[0] if requested else (role_args[0] if role_args else "role")
+    # a single-role install of reverse / blue_* gets that role's own phase grouping
+    override = primary if (len(requested) == 1 and primary in _phase_override_roles()) else None
+    order, index = load_phases(override)
+    label = (roles.get(primary, {}) or {}).get("label") or primary.replace("_", " ").title()
+    try:
+        _CHILD_OUT = open(CHILD_LOG, "a")
+        _CHILD_OUT.write(f"\n==== hemo-pkg install-role {' '.join(role_args)} "
+                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} ====\n")
+        _CHILD_OUT.flush()
+    except OSError:
+        _CHILD_OUT = None
+    _QUIET = True
+    return Panel(label, tools, order, index)
+
+
+def close_panel(panel):
+    """Finalize the panel (if any) and restore plain output + child streams."""
+    global _QUIET, _CHILD_OUT
+    _QUIET = False
+    if _CHILD_OUT is not None:
+        try:
+            _CHILD_OUT.flush()
+            _CHILD_OUT.close()
+        except Exception:
+            pass
+        _CHILD_OUT = None
+
+
+def install_tools(tools, panel=None) -> list:
+    """Install a list of tool names. Return the names that failed. With a panel,
+    per-tool progress drives the redraw instead of printing scrolling lines."""
+    if os.geteuid() != 0:
+        log("install must run as root (apt / /opt / /usr/local/bin)")
+        sys.exit(1)
+    os.makedirs(OPT, exist_ok=True)
+    failed = []
+    # resolve all first so apt names can be batched update-once; install in order
+    for tool in tools:
+        method, d = resolve(tool)
+        if not method:
+            if panel:
+                panel.start_tool(tool, "?")
+                panel.finish_tool(tool, False)
+            else:
+                bad(f"{tool}: unresolved (not in apt.yml or extra.yml)")
+            failed.append(tool)
+            continue
+        if panel:
+            panel.start_tool(tool, method)
+        try:
+            good = INSTALLERS[method](tool, d) is True
+            if panel:
+                panel.finish_tool(tool, good)
+            elif good:
+                ok(f"{tool} [{method}]")
+            else:
+                bad(f"{tool} [{method}] failed")
+            if not good:
+                failed.append(tool)
+        except Exception as exc:  # keep going; one bad tool never aborts a role
+            if panel:
+                panel.finish_tool(tool, False)
+            else:
+                bad(f"{tool} [{method}] error: {exc}")
+            failed.append(tool)
+    return failed
+
+
+# ---------------------------------------------------------------- role expand
+def expand_roles(names) -> list:
+    roles = load_roles()
+    want = []
+    # "full" or "*" -> union of every role's concrete tools
+    concrete = [k for k in roles if k != "full"]
+
+    def choice_tools(key, all_options):
+        # a role's `choices:` (e.g. c2: AdaptixC2|sliver) resolve to one tool
+        # each — the --choose override or the default — except `full`, which
+        # takes every option.
+        out = []
+        for cname, c in (roles.get(key, {}).get("choices", {}) or {}).items():
+            opts = c.get("options", []) or []
+            if not opts:
+                continue
+            if all_options:
+                out += opts
+            else:
+                sel = CHOICES.get(cname) or c.get("default") or opts[0]
+                out.append(sel if sel in opts else opts[0])
+        return out
+
+    def tools_of(key):
+        r = roles.get(key, {})
+        t = r.get("tools", []) or []
+        if t == ["*"] or key == "full":
+            out = []
+            for k in concrete:
+                out += roles[k].get("tools", []) or []
+                out += choice_tools(k, all_options=True)
+            return out
+        return t + choice_tools(key, all_options=False)
+
+    for name in names:
+        if name not in roles:
+            log(f"unknown role: {name}")
+            continue
+        want += tools_of(name)
+
+    # dedupe preserving order
+    seen = set()
+    ordered = []
+    for t in want:
+        if t == "*":
+            continue
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    return ordered
+
+
+def record_roles(names) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    path = os.path.join(STATE_DIR, "roles")
+    have = set()
+    if os.path.exists(path):
+        with open(path) as fh:
+            have = {ln.strip() for ln in fh if ln.strip()}
+    have |= set(names)
+    with open(path, "w") as fh:
+        for r in sorted(have):
+            fh.write(r + "\n")
+
+
+# ---------------------------------------------------------------- commands
+def cmd_list_roles():
+    for key, r in load_roles().items():
+        print(f"{key}\t{r.get('label', key)}\t{r.get('summary', '')}")
+
+
+def cmd_role_tools(args):
+    for t in expand_roles(args):
+        print(t)
+
+
+def cmd_resolve(args):
+    for tool in args:
+        method, d = resolve(tool)
+        if not method:
+            print(f"{tool}\tUNRESOLVED\t-")
+            continue
+        if method == "apt":
+            detail = f"{d['pkg']} (apt:{d['section']})"
+        elif method == "pipx":
+            detail = f"{d.get('package') or d['name']} {_pinned(d.get('version')) or 'latest'}"
+        elif method == "go":
+            detail = f"{d['package']}@{_pinned(d.get('ref')) or 'latest'}"
+        elif method == "git":
+            detail = f"{d['repo']} -> {d.get('dest', OPT + '/' + d['name'])}"
+        elif method == "binary":
+            detail = f"{d['repo']} [{d['asset']}] @ {_pinned(d.get('ref')) or 'latest'}"
+        else:
+            detail = d.get("repo") or d.get("source") or d.get("method", "")
+        print(f"{tool}\t{method}\t{detail}")
+
+
+def cmd_install(args):
+    failed = install_tools(args)
+    sys.exit(1 if failed else 0)
+
+
+def cmd_install_role(args):
+    tools = expand_roles(args)
+    if not tools:
+        log("no tools to install")
+        return
+    # root check before the panel: make_panel flips _QUIET on, which would swallow
+    # install_tools' own "must run as root" message and exit silently on a TTY.
+    if os.geteuid() != 0:
+        log("install must run as root (apt / /opt / /usr/local/bin)")
+        sys.exit(1)
+    panel = make_panel(args, tools)
+    if not panel:
+        log(f"installing {len(tools)} tool(s) for role(s): {', '.join(args)}")
+    try:
+        failed = install_tools(tools, panel=panel)
+        if panel:
+            panel.finalize(failed)
+    finally:
+        close_panel(panel)
+    record_roles([a for a in args if a in load_roles()])
+    if not panel:
+        if failed:
+            log(f"{len(failed)} tool(s) need attention: {', '.join(failed)}")
+        else:
+            log("all tools installed")
+
+
+def cmd_remove(args):
+    failed = remove_tools(args)
+    sys.exit(1 if failed else 0)
+
+
+def cmd_installed_tools(_args):
+    """Tools belonging to the currently-installed roles (the switch 'keep?' set)."""
+    path = os.path.join(STATE_DIR, "roles")
+    roles = []
+    if os.path.exists(path):
+        roles = [ln.strip() for ln in open(path) if ln.strip()]
+    for t in expand_roles(roles):
+        print(t)
+
+
+def cmd_prune_candidates(args):
+    """Tools installed for current roles that are NOT in the roles being switched
+    to — i.e. the tools a switch could remove. Usage: prune-candidates <role>..."""
+    if not args:
+        log("usage: hemo-pkg prune-candidates <role-switching-to>...")
+        sys.exit(1)
+    keep = set(expand_roles(list(args)))
+    path = os.path.join(STATE_DIR, "roles")
+    roles = [ln.strip() for ln in open(path) if ln.strip()] if os.path.exists(path) else []
+    for t in expand_roles(roles):
+        if t not in keep:
+            print(t)
+
+
+def cmd_set_roles(args):
+    """Write the installed-roles file to EXACTLY these roles (used after a role
+    switch that pruned the old role's tools). Non-role names are ignored."""
+    if os.geteuid() != 0:
+        log("set-roles must run as root"); sys.exit(1)
+    known = load_roles()
+    roles = [a for a in args if a in known]
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(os.path.join(STATE_DIR, "roles"), "w") as fh:
+        for r in sorted(set(roles)):
+            fh.write(r + "\n")
+
+
+def cmd_profile(args):
+    if len(args) != 2:
+        log("usage: hemo-pkg profile <role> <accent|wallpaper|bookmarks>")
+        sys.exit(1)
+    role, field = args
+    prof = (load_roles().get(role, {}) or {}).get("profile", {}) or {}
+    val = prof.get(field, "")
+    if isinstance(val, list):
+        print("\n".join(str(v) for v in val))
+    else:
+        print(val)
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.stderr.write(__doc__)
+        sys.exit(1)
+    cmd, raw = argv[1], argv[2:]
+    # pull out `--choose key=value` tokens (role choice overrides) before dispatch
+    rest = []
+    i = 0
+    while i < len(raw):
+        a = raw[i]
+        if a == "--choose" and i + 1 < len(raw) and "=" in raw[i + 1]:
+            k, v = raw[i + 1].split("=", 1)
+            CHOICES[k.strip()] = v.strip()
+            i += 2
+            continue
+        if a.startswith("--choose=") and "=" in a[len("--choose="):]:
+            k, v = a[len("--choose="):].split("=", 1)
+            CHOICES[k.strip()] = v.strip()
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    dispatch = {
+        "list-roles": lambda: cmd_list_roles(),
+        "role-tools": lambda: cmd_role_tools(rest),
+        "resolve": lambda: cmd_resolve(rest),
+        "install": lambda: cmd_install(rest),
+        "install-role": lambda: cmd_install_role(rest),
+        "remove": lambda: cmd_remove(rest),
+        "installed-tools": lambda: cmd_installed_tools(rest),
+        "prune-candidates": lambda: cmd_prune_candidates(rest),
+        "set-roles": lambda: cmd_set_roles(rest),
+        "profile": lambda: cmd_profile(rest),
+    }
+    fn = dispatch.get(cmd)
+    if not fn:
+        log(f"unknown command: {cmd}")
+        sys.stderr.write(__doc__)
+        sys.exit(1)
+    fn()
+
+
+if __name__ == "__main__":
+    main(sys.argv)

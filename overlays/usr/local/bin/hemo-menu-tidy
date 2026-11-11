@@ -1,0 +1,61 @@
+#!/usr/bin/env sh
+# hemo-menu-tidy — hide the Kali menu's terminal launchers from the app
+# launcher. ~190 kali-*.desktop entries just open a shell running "<tool> -h"
+# (or the bare tool); they bury the real apps in search, and the tools are a
+# terminal away anyway. GUI tools (Burp, Wireshark, Maltego, ...) stay.
+#
+# Works by dropping a NoDisplay override with the same id into
+# /usr/local/share/applications, which wins over /usr/share/applications.
+# Nothing is deleted. Re-run by an apt hook so new Kali entries get hidden too.
+#   hemo-menu-tidy          hide them (needs root)
+#   hemo-menu-tidy --undo   show them all again
+set -eu
+
+SRC=/usr/share/applications
+DST=/usr/local/share/applications
+MARK="X-Hemo-Hidden=true"
+
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+mkdir -p "$DST"
+
+if [ "${1:-}" = "--undo" ]; then
+    grep -l "^$MARK" "$DST"/*.desktop 2>/dev/null | xargs -r rm -f
+    echo "hemo-menu-tidy: Kali terminal launchers visible again"
+    exit 0
+fi
+
+n=0
+for f in "$SRC"/kali-*.desktop; do
+    [ -e "$f" ] || continue
+    grep -q '^Exec=.*exec-in-shell' "$f" || continue
+    out="$DST/$(basename "$f")"
+    # never clobber an override someone wrote by hand
+    [ -e "$out" ] && ! grep -q "^$MARK" "$out" && continue
+    name=$(sed -n 's/^Name=//p' "$f" | head -1)
+    printf '[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\n%s\n' "$name" "$MARK" > "$out"
+    n=$((n + 1))
+done
+# Kali menu copies of GUI apps that ship their own launcher (e.g. kali-menu's
+# obsidian.desktop next to Obsidian's md.obsidian.Obsidian.desktop) show up
+# twice in rofi. Hide the Kali copy when its package installs its own entry.
+for f in "$SRC"/*.desktop; do
+    [ -e "$f" ] || continue
+    pkg=$(sed -n 's/^X-Kali-Package=//p' "$f" | head -1)
+    [ -n "$pkg" ] || continue
+    grep -q '^Exec=.*exec-in-shell' "$f" && continue      # handled above
+    # must exist on disk: kali-menu diverts some packages' own entries away
+    # (zenmap) and ship their own copies under the same names
+    own=""
+    for d in $(dpkg -L "$pkg" 2>/dev/null | grep -E "^$SRC/[^/]+\.desktop$"); do
+        [ "$d" != "$f" ] && [ -e "$d" ] && ! grep -q "^X-Kali-Package=" "$d" && { own=$d; break; }
+    done
+    [ -n "$own" ] || continue
+    out="$DST/$(basename "$f")"
+    [ -e "$out" ] && ! grep -q "^$MARK" "$out" && continue
+    name=$(sed -n 's/^Name=//p' "$f" | head -1)
+    printf '[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\n%s\n' "$name" "$MARK" > "$out"
+    n=$((n + 1))
+done
+[ "${1:-}" = "--quiet" ] || echo "hemo-menu-tidy: hid $n Kali terminal launchers (undo: hemo-menu-tidy --undo)"

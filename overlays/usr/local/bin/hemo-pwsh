@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# hemo-pwsh — open the operator's default terminal running PowerShell.
+# Bound to $mod+Shift+Return. Terminal pick matches hemo-shotterm: Welcome's
+# ~/.config/hemo/terminal wins, else the x-terminal-emulator alternative, else
+# kitty. kitty takes the command positionally (class `hemo-pwsh`, for i3 rules);
+# qterminal and others want -e. The prompt is Starship, from the PowerShell profile.
+# PowerShell is part of the base install; if it's missing anyway (removed, or an
+# older install), the terminal offers to install it instead.
+set -u
+
+pick_term() {
+    local f="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/terminal" t="" x
+    [ -f "$f" ] && t="$(tr -d '[:space:]' < "$f")"
+    case "$t" in kitty|qterminal) command -v "$t" >/dev/null 2>&1 && { echo "$t"; return; } ;; esac
+    x="$(command -v x-terminal-emulator 2>/dev/null)" && x="$(readlink -f "$x" 2>/dev/null)" && [ -n "$x" ] \
+        && { echo "${x##*/}"; return; }
+    echo kitty
+}
+
+if command -v pwsh >/dev/null 2>&1; then
+    CMD=(pwsh -NoLogo "$@")
+else
+    CMD=(bash -c '
+        echo "PowerShell is not installed. It is part of the Hemo base install,"
+        echo "so it was likely removed or this system predates it."
+        echo
+        read -rp "Install PowerShell now? [y/N] " a
+        case "$a" in
+            [yY]*) sudo apt-get install -y powershell && exec pwsh -NoLogo ;;
+        esac
+        read -rp "Press Enter to close. " _')
+fi
+
+case "$(pick_term)" in
+    kitty)     exec kitty --class hemo-pwsh "${CMD[@]}" ;;
+    qterminal) exec qterminal -e "${CMD[@]}" ;;
+    *)         exec x-terminal-emulator -e "${CMD[@]}" ;;
+esac

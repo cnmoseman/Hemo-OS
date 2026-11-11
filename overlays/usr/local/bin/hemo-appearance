@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""hemo-appearance — apply user appearance tweaks from the Hemo Welcome panel.
+
+Each setting edits the real config file (so it persists) and reloads the one
+program that owns it. Runs as the logged-in user; touches nothing system-wide.
+
+  hemo-appearance set  <key> <value>    # change one setting + reload
+  hemo-appearance get  <key>            # print the stored value (or 'default')
+  hemo-appearance apply                 # re-apply the stored settings (login)
+
+keys / values:
+  text    6..32 | small | medium | large   # terminal font size in points; bar,
+                                           # notifications + GTK use one less (8..16)
+  lock    5 | 10 | 15 | 30 | never       # auto-lock idle timeout (minutes)
+  gaps    tight | comfortable | roomy    # i3 inner gap
+  border  0 | 2 | 4                      # i3 window border width (px)
+  effects full | flat                    # picom shadows + fades
+  corners rounded | square               # picom rounded window corners
+  opacity 100 | 95 | 90 | 85             # terminal background opacity (%)
+  termfg  default | #rrggbb              # terminal text color (default = the mode's)
+  termcolors auto | gruvbox | kali | dracula | nord | solarized | tokyonight
+             | catppuccin | onedark      # terminal's 16 colors (auto = follow the mode)
+  prompt  <name>                         # shell prompt preset from /usr/share/hemo/prompts/
+                                         # (stock oneline kali userhost engagement
+                                         #  timestamped) -> ~/.config/starship.toml
+  date    iso | us | eu | day | off      # date part of the per-command stamp
+  time    24h | 12h | 24h-tz | 12h-tz | off
+                                         # time part of the per-command stamp
+  tz      system | utc | est | cst | mst | pst | gmt | cet | jst | aest
+          | <IANA/Zone>                   # timezone for the stamp (independent of
+                                         # the system clock); any zoneinfo entry
+                                         # is accepted
+"""
+import os
+import re
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+C = lambda *p: os.path.join(HOME, ".config", *p)
+KITTY, POLYBAR, DUNST = C("kitty/kitty.conf"), C("polybar/config.ini"), C("dunst/dunstrc")
+GTK, LOOK, I3, PICOM = C("gtk-3.0/settings.ini"), C("i3/config.d/hemo-look.conf"), C("i3/config"), C("picom/picom.conf")
+STORE = C("hemo/appearance.conf")
+PROMPTS = "/usr/share/hemo/prompts"
+SYMBOLS = os.path.join(PROMPTS, "symbols.inc")   # `starship preset nerd-font-symbols`
+THEME_INC = os.path.join(PROMPTS, "theme.inc")    # default styles in palette names
+STARSHIP = C("starship.toml")
+REPORT_ACTIVE, REPORT_BACKUP = C("hemo/report.active"), C("hemo/report-backup/starship.toml")
+STAMP_FILE    = C("hemo/stamp-format")    # strftime string the zsh preexec reads
+STAMP_TZ_FILE = C("hemo/stamp-tz")        # IANA zone for the stamp (empty = system)
+
+# Three independent axes. hemo-appearance composes the final strftime from
+# (date, time) and writes the IANA zone separately. 'off' on EITHER date or
+# time drops that half; both 'off' = empty strftime -> zsh hook stays quiet.
+DATE_FORMATS = {
+    "iso": "%Y-%m-%d",         # 2026-10-17   (default)
+    "us":  "%m/%d/%Y",         # 10/17/2026
+    "eu":  "%d-%m-%Y",         # 17-10-2026
+    "day": "%a %Y-%m-%d",      # Sat 2026-10-17
+    "off": "",
+}
+TIME_FORMATS = {
+    "24h":    "%H:%M:%S",        # 18:04:09     (default)
+    "12h":    "%I:%M:%S %p",     # 06:04:09 PM
+    "24h-tz": "%H:%M:%S %Z",     # 18:04:09 EDT
+    "12h-tz": "%I:%M:%S %p %Z",  # 06:04:09 PM EDT
+    "off":    "",
+}
+TZ_PRESETS = {
+    "system": "",                       # (default) use the system clock
+    "utc":    "UTC",
+    "est":    "America/New_York",
+    "cst":    "America/Chicago",
+    "mst":    "America/Denver",
+    "pst":    "America/Los_Angeles",
+    "gmt":    "Europe/London",
+    "cet":    "Europe/Berlin",
+    "jst":    "Asia/Tokyo",
+    "aest":   "Australia/Sydney",
+}
+
+
+def compose_stamp(date=None, time=None, tz=None):
+    """Rebuild ~/.config/hemo/stamp-format and ~/.config/hemo/stamp-tz from the
+    stored date/time/tz keys. Each kwarg overrides the stored value (for the
+    key currently being set, since main() calls set_* BEFORE store_write)."""
+    d = store_read()
+    date_name = date if date is not None else d.get("date", "iso")
+    time_name = time if time is not None else d.get("time", "24h")
+    tz_name   = tz   if tz   is not None else d.get("tz",   "system")
+    df = DATE_FORMATS.get(date_name, DATE_FORMATS["iso"])
+    tf = TIME_FORMATS.get(time_name, TIME_FORMATS["24h"])
+    fmt = " ".join(p for p in (df, tf) if p)
+    tz_val = TZ_PRESETS[tz_name] if tz_name in TZ_PRESETS else tz_name
+    for path, body in ((STAMP_FILE, fmt), (STAMP_TZ_FILE, tz_val)):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+
+# text size: a terminal point size; the old names are aliases for it
+TEXT_PRESETS = {"small": 10, "medium": 11, "large": 13}
+TEXT_MIN, TEXT_MAX = 6, 32
+
+
+def text_size(v):
+    """Terminal point size for a text value (number or preset name), else None."""
+    v = str(v).strip().lower()
+    if v in TEXT_PRESETS:
+        return TEXT_PRESETS[v]
+    if v.isdigit() and TEXT_MIN <= int(v) <= TEXT_MAX:
+        return int(v)
+    return None
+GAPS = {"tight": 2, "comfortable": 6, "roomy": 14}
+
+
+def edit(path, *subs):
+    """Apply (pattern, repl) regex subs to a file in place. Missing file = skip."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            t = old = fh.read()
+    except FileNotFoundError:
+        return
+    for pat, repl in subs:
+        t = re.sub(pat, repl, t)
+    if t != old:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(t)
+
+
+def run(*cmd):
+    # guarded: a missing tool prints a note instead of raising OSError
+    try:
+        subprocess.run(cmd, capture_output=True)
+    except OSError as e:
+        print(f"hemo-appearance: could not run {cmd[0]}: {e}", file=sys.stderr)
+
+
+def _spawn(argv):
+    """Fire-and-forget a detached process, guarded against a missing binary."""
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        print(f"hemo-appearance: could not launch {argv[0]}: {e}", file=sys.stderr)
+
+
+def restart_polybar():
+    run("killall", "-q", "polybar")
+    _spawn(["setsid", "polybar", "main"])
+
+
+def restart_picom():
+    run("pkill", "-x", "picom")
+    _spawn(["setsid", "picom", "-b", "--config", PICOM])
+
+
+# ---------------------------------------------------------------- setters
+def set_text(v):
+    k = text_size(v)
+    p = d = g = max(8, min(16, k - 1))   # UI text one step under the terminal, bar-safe
+    edit(KITTY, (r"(?m)^(font_size\s+)[\d.]+", rf"\g<1>{k}.0"))
+    edit(POLYBAR, (r"(?m)^(font-0\s*=\s*.*:size=)\d+", rf"\g<1>{p}"))
+    edit(DUNST, (r"(?m)^(\s*font\s*=\s*.*?)\d+(\s*)$", rf"\g<1>{d}\g<2>"))
+    edit(GTK, (r"(?m)^(gtk-font-name\s*=\s*\S.*?\s)\d+\s*$", rf"\g<1>{g}"))
+    run("pkill", "-USR1", "kitty")
+    run("dunstctl", "reload")
+    restart_polybar()
+
+
+def set_lock(v):
+    secs = 0 if v == "never" else int(v) * 60
+    edit(I3, (r"(?m)^(exec --no-startup-id xset s )\d+ \d+.*$",
+              rf"\g<1>{secs} {secs}"))
+    run("xset", "s", str(secs), str(secs))
+
+
+def set_gaps(v):
+    edit(LOOK, (r"(?m)^(gaps inner )\d+", rf"\g<1>{GAPS[v]}"))
+    run("i3-msg", "reload")
+
+
+def set_border(v):
+    n = int(v)
+    edit(LOOK, (r"(?m)^(default_border pixel )\d+", rf"\g<1>{n}"),
+         (r"(?m)^(default_floating_border pixel )\d+", rf"\g<1>{n}"))
+    run("i3-msg", "reload")
+
+
+def set_effects(v):
+    on = "true" if v == "full" else "false"
+    edit(PICOM,
+         (r"(?m)^(shadow\s*=\s*)(true|false)", rf"\g<1>{on}"),
+         (r"(?m)^(fading\s*=\s*)(true|false)", rf"\g<1>{on}"))
+    restart_picom()
+
+
+def set_corners(v):
+    rad = "8" if v == "rounded" else "0"
+    edit(PICOM, (r"(?m)^(corner-radius\s*=\s*)\d+", rf"\g<1>{rad}"))
+    restart_picom()
+
+
+def prompts():
+    try:
+        return {f[:-5] for f in os.listdir(PROMPTS) if f.endswith(".toml")}
+    except OSError:
+        return set()
+
+
+def merge_tables(toml, inc, banner):
+    """Merge the TOML tables in file `inc` into a prompt preset. A table the preset
+    already has gets the include's keys added under its header (TOML forbids a
+    second [directory]) unless the preset sets that key itself; the rest are
+    appended."""
+    try:
+        sym = open(inc, encoding="utf-8").read()
+    except OSError:
+        return toml
+    tables, cur = {}, None
+    for ln in sym.splitlines():
+        m = re.match(r"^\[([^\]]+)\]\s*$", ln)
+        if m:
+            cur = m.group(1)
+            tables[cur] = []
+        elif cur and ln.strip():
+            tables[cur].append(ln)
+    tail = []
+    for name, lines in tables.items():
+        hdr = re.compile(rf"(?m)^\[{re.escape(name)}\]\s*$")
+        if hdr.search(toml):
+            body = toml[hdr.search(toml).end():].split("\n[", 1)[0]
+            keep = [l for l in lines
+                    if not re.search(rf"(?m)^\s*{re.escape(l.split('=')[0].strip())}\s*=", body)]
+            if keep:
+                toml = hdr.sub(lambda m: m.group(0) + "\n" + "\n".join(keep), toml, count=1)
+        else:
+            tail.append(f"[{name}]\n" + "\n".join(lines))
+    if tail:
+        toml = toml.rstrip("\n") + f"\n\n# --- {banner} — merged by hemo-appearance\n" \
+               + "\n\n".join(tail) + "\n"
+    return toml
+
+
+def themed_prompt(toml):
+    """A preset made Hemo-ready: theme colors + Nerd Font symbols (no emoji),
+    then the live [palettes.hemo] that hemo-role-apply caches for the accent."""
+    toml = merge_tables(toml, THEME_INC, "Hemo theme colors")
+    toml = merge_tables(toml, SYMBOLS, "Nerd Font symbols (no emoji)")
+    try:
+        pal = open(C("hemo/starship-palette.toml"), encoding="utf-8").read().strip()
+    except OSError:
+        pal = ""
+    if not pal:     # no theme applied yet: the named colors would be undefined
+        return toml
+    m = re.search(r"(?m)^\[[A-Za-z0-9_.-]+\]\s*$", toml)
+    i = m.start() if m else len(toml)
+    toml = toml[:i] + 'palette = "hemo"\n\n' + toml[i:]
+    return toml.rstrip("\n") + f"\n\n# >>> hemo:starship\n{pal}\n# <<< hemo:starship\n"
+
+
+def set_prompt(v):
+    # Starship re-reads its config on every prompt, so open shells change at once.
+    # In report mode the live file is the team standard's; save to the personal
+    # backup instead so it's what comes back when report mode is turned off.
+    dest = REPORT_BACKUP if os.path.exists(REPORT_ACTIVE) else STARSHIP
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(os.path.join(PROMPTS, v + ".toml"), encoding="utf-8") as src, \
+         open(dest, "w", encoding="utf-8") as out:
+        out.write(themed_prompt(src.read()))
+
+
+def mode_text():
+    """The current mode's text color from palette.env (terminal default fg)."""
+    try:
+        mode = open(C("hemo/mode")).read().strip() or "dark"
+    except OSError:
+        mode = "dark"
+    try:
+        for ln in open("/usr/share/hemo/palette.env", encoding="utf-8"):
+            k, _, v = ln.strip().partition("=")
+            if k == f"HEMO_{mode.upper()}_TEXT":
+                return v.split()[0]
+    except OSError:
+        pass
+    return "#e8dfd4"
+
+
+def set_termfg(v):
+    # store first: hemo-role-apply reads it too, so mode/accent changes keep it
+    store_write("termfg", v)
+    fg = mode_text() if v == "default" else v
+    edit(KITTY, (r"(?m)^(foreground\s+)#[0-9a-fA-F]{6}", rf"\g<1>{fg}"))
+    run("pkill", "-USR1", "kitty")
+
+
+TERM_SCHEMES = {"auto", "gruvbox", "kali", "dracula", "nord", "solarized",
+                "tokyonight", "catppuccin", "onedark"}
+
+
+def set_termcolors(v):
+    # store first: hemo-role-apply reads it (here and on every mode/accent change)
+    store_write("termcolors", v)
+    run("hemo-role-apply", "--kitty")
+
+
+def set_opacity(v):
+    f = max(0.70, min(1.0, int(v) / 100.0))
+    edit(KITTY, (r"(?m)^(background_opacity\s+)[\d.]+", rf"\g<1>{f:.2f}"))
+    run("pkill", "-USR1", "kitty")
+
+
+def set_date(v): compose_stamp(date=v)
+def set_time(v): compose_stamp(time=v)
+def set_tz(v):   compose_stamp(tz=v)
+
+
+SETTERS = {"text": set_text, "lock": set_lock, "gaps": set_gaps, "border": set_border,
+           "effects": set_effects, "corners": set_corners, "opacity": set_opacity,
+           "prompt": set_prompt, "termfg": set_termfg, "termcolors": set_termcolors,
+           "date": set_date, "time": set_time, "tz": set_tz}
+VALID = {"lock": {"5", "10", "15", "30", "never"},
+         "gaps": set(GAPS), "border": {"0", "2", "4"},
+         "effects": {"full", "flat"}, "corners": {"rounded", "square"},
+         "opacity": {"100", "95", "90", "85"}, "termcolors": TERM_SCHEMES,
+         "date": set(DATE_FORMATS), "time": set(TIME_FORMATS)}
+
+
+def valid(key, val):
+    if key == "text":
+        return text_size(val) is not None
+    if key == "prompt":
+        return val in prompts()
+    if key == "termfg":
+        return val == "default" or re.fullmatch(r"#[0-9a-fA-F]{6}", val) is not None
+    if key == "tz":
+        # one of the preset names, or any IANA zone that zoneinfo recognises
+        return val in TZ_PRESETS or (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_+/-]*", val) is not None
+            and os.path.isfile(f"/usr/share/zoneinfo/{val}"))
+    return key in VALID and val in VALID[key]
+
+
+# ---------------------------------------------------------------- store
+def store_read():
+    out = {}
+    try:
+        for ln in open(STORE, encoding="utf-8"):
+            if "=" in ln and not ln.startswith("#"):
+                k, _, val = ln.strip().partition("=")
+                out[k.strip()] = val.strip()
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def store_write(key, value):
+    d = store_read()
+    d[key] = value
+    os.makedirs(os.path.dirname(STORE), exist_ok=True)
+    with open(STORE, "w", encoding="utf-8") as fh:
+        fh.write("# hemo-appearance — user look settings\n")
+        for k, v in d.items():
+            fh.write(f"{k}={v}\n")
+
+
+# ---------------------------------------------------------------- cli
+def main(argv):
+    if len(argv) >= 4 and argv[1] == "set":
+        key, val = argv[2], argv[3]
+        if key not in SETTERS or not valid(key, val):
+            sys.stderr.write(f"bad: {key}={val}\n")
+            sys.exit(1)
+        SETTERS[key](val)
+        store_write(key, str(text_size(val)) if key == "text" else val)
+    elif len(argv) >= 3 and argv[1] == "get":
+        print(store_read().get(argv[2], "default"))
+    elif len(argv) >= 2 and argv[1] == "apply":
+        for k, v in store_read().items():
+            if k in SETTERS and valid(k, v):
+                SETTERS[k](v)
+    else:
+        sys.stderr.write(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

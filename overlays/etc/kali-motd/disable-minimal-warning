@@ -1,0 +1,2 @@
+# Hemo is minimal on purpose (tools install per role) — hide kali-motd's
+# "This is a minimal installation" banner for every user. Read by /usr/bin/kali-motd.

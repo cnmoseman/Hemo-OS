@@ -1,0 +1,95 @@
+# Hemo i3
+set $mod Mod4
+font pango:JetBrains Mono 10
+
+# shipped window rules (float dialogs, etc.) — kept separate so re-provision can update them
+include ~/.config/i3/config.d/*.conf
+
+exec --no-startup-id dunst
+exec --no-startup-id xdg-user-dirs-update   # standard folders (Documents, Pictures, ...); i3 skips XDG autostart
+exec --no-startup-id picom -b --config ~/.config/picom/picom.conf
+exec --no-startup-id polybar main
+exec --no-startup-id autorandr --change
+exec --no-startup-id hemo-guest-session    # VM guest agent: host clipboard, drag-drop, auto-resize
+exec --no-startup-id udiskie --smart-tray   # auto-mount removable media; tray icon only while a drive is plugged in
+exec --no-startup-id hemo-net-icons         # accent network glyphs (Hemo-Net) + launch nm-applet tray (VPN/connections)
+exec --no-startup-id greenclip daemon   # clipboard history for rofi ($mod+c); no-op if greenclip absent
+exec --no-startup-id lxpolkit           # polkit agent: GUI password prompts for pkexec
+# auto-lock: blank+lock after 10 min idle, and lock automatically before the
+# machine suspends/sleeps (xss-lock bridges i3lock to the screensaver + logind).
+# hemo-caffeine ($mod+Shift+c) suspends this for long jobs.
+exec --no-startup-id xset s 600 600
+exec --no-startup-id xss-lock --transfer-sleep-lock -- hemo-lock -n
+exec --no-startup-id hemo-welcome --autostart   # first-run setup hub (self-suppresses after)
+# wallpaper: hemo-role-apply writes ~/.fehbg (feh) for the primary role
+# (falls back to the stock Hemo background until a role sets one)
+exec --no-startup-id sh -c '[ -x "$HOME/.fehbg" ] && "$HOME/.fehbg" || hemo-role-apply --wallpaper /usr/share/hemo/wallpapers/hemo-bg.png'
+
+# apps
+# $mod+Return opens the default terminal (x-terminal-emulator = qterminal by default,
+# or kitty if chosen in Welcome setup) with the login shell, zsh. $mod+Shift+Return
+# opens the same terminal running PowerShell (hemo-pwsh). $mod+Mod1+Return always
+# opens the fixed-size terminal used for report/screenshot captures.
+# hemo-open bumps focus to the window under the mouse (via a 0,0 xdotool
+# mousemove so focus_follows_mouse fires) before launching, so a new window
+# always splits off the tile the pointer is over.
+bindsym $mod+Return exec --no-startup-id hemo-open x-terminal-emulator
+bindsym $mod+Shift+Return exec --no-startup-id hemo-open hemo-pwsh
+bindsym $mod+Mod1+Return exec --no-startup-id hemo-open hemo-shotterm
+bindsym $mod+t exec --no-startup-id hemo-open thunar
+# desc: Web browser (sandboxed)
+bindsym $mod+b exec --no-startup-id hemo-open firefox-esr
+# launcher: $mod+d = app launcher (pinned apps first)
+bindsym $mod+d exec --no-startup-id hemo-open hemo-launcher
+# Hemo welcome / settings hub
+bindsym $mod+Shift+d exec --no-startup-id hemo-welcome --settings
+bindsym $mod+c exec --no-startup-id rofi -modi "clipboard:greenclip print" -show clipboard -run-command '{cmd}'
+bindsym $mod+q kill
+bindsym $mod+Shift+r restart
+bindsym $mod+Shift+e exec --no-startup-id hemo-power
+bindsym $mod+Shift+x exec --no-startup-id hemo-lock
+# rename the focused workspace (keeps its number; empty = reset)
+bindsym $mod+F2 exec --no-startup-id hemo-ws-rename
+
+# audio volume (pamixer)
+bindsym XF86AudioRaiseVolume exec --no-startup-id hemo-vol up
+bindsym XF86AudioLowerVolume exec --no-startup-id hemo-vol down
+bindsym XF86AudioMute exec --no-startup-id hemo-vol mute
+
+# screenshots for reports
+#   Print          -> flameshot region (auto-saves + copies, Hemo styling)
+#   $mod+Print     -> shot: active window, bordered + fixed width, to clipboard
+#   $mod+Shift+Print -> shot -s: region, same consistent framing
+bindsym Print exec --no-startup-id flameshot gui
+bindsym $mod+Print exec --no-startup-id shot
+bindsym $mod+Shift+Print exec --no-startup-id shot -s
+
+# workspaces — plain numbers for every role. `workspace number N` matches a
+# workspace by its number, so it still works after $mod+F2 renames it ("2:web").
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+
+# focus / move (vim keys)
+bindsym $mod+h focus left
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+l focus right
+bindsym $mod+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod+Shift+l move right
+
+# window border colors — accent is the primary role's (rewritten per theme).
+# class                 border  backgr. text    indicator child_border
+# >>> hemo:colors (managed by hemo-role-apply; do not edit)
+client.focused          #c9a37a #c9a37a #e8dfd4 #c9a37a #c9a37a
+client.focused_inactive #3f372f #1b1714 #a39686 #3f372f #3f372f
+client.unfocused        #221d19 #14110e #a39686 #221d19 #221d19
+client.urgent           #c41e2f #c41e2f #e8dfd4 #c41e2f #c41e2f
+# <<< hemo:colors

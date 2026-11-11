@@ -1,0 +1,31 @@
+# Hemo GRUB theme
+desktop-image: "background.png"
+desktop-color: "#0e1113"
+title-text: ""
+message-color: "#e8e9e7"
+message-bg-color: "#0e1113"
+terminal-font: "Hemo Mono 16"
+
++ boot_menu {
+  left   = 25%
+  top    = 30%
+  width  = 50%
+  height = 55%
+  item_font            = "Hemo Mono 16"
+  item_color           = "#9aa3a0"
+  selected_item_color  = "#e9c24a"
+  item_height          = 36
+  item_spacing         = 8
+  item_padding         = 10
+  scrollbar            = false
+}
+
++ label {
+  top    = 88%
+  left   = 0
+  width  = 100%
+  align  = "center"
+  color  = "#5e625f"
+  font   = "Hemo Mono 14"
+  text   = "HEMO  //  curated kali"
+}

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# hemo-lock — the Hemo lock screen (i3lock-color). Used by $mod+Shift+x, xss-lock
+# (idle/suspend), hemo-power and the polybar power icon. Extra args (e.g. -n) pass
+# through to i3lock.
+#
+# The login flower art pinned to the screen edges (hemo-edge-art), the user's
+# own picture (~/.face) inside the typing ring in the blank middle, clock + date
+# underneath. The ring uses the role accent
+# (~/.config/hemo/accent), darkened until it reads on tan. The background is
+# rendered once per screen size and cached until the picture/accent/art change.
+set -u
+
+TAN="#d4bb91"; TEXT="2a241e"; MUTED="6b6157"; BAD="b3261e"
+FALLBACK_FACE=/usr/share/hemo/branding/hemo-head.png
+ART=/usr/share/hemo/branding/login-art.png
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/hemo"
+R=84; RW=8                      # ring radius / width; the picture fills the inside
+IM=$(command -v magick || echo convert)
+
+# plain i3lock (not -color) can't draw any of this: fall back to a flat tan screen
+if ! i3lock --version 2>&1 | grep -q '\.c\.'; then
+    exec i3lock -c "${TAN#\#}" "$@"
+fi
+
+read -r W H < <(xdpyinfo 2>/dev/null | awk '/dimensions:/{split($2,a,"x"); print a[1], a[2]}')
+W=${W:-1920}; H=${H:-1080}
+
+face="$HOME/.face"; [ -s "$face" ] || face=$FALLBACK_FACE
+accent=$(grep -m1 -oE '#[0-9a-fA-F]{6}' "$HOME/.config/hemo/accent" 2>/dev/null) || accent="#b08a62"
+
+# darken the accent toward black (2% steps) until it has >= 3:1 contrast on tan
+ring=$(python3 - "$accent" "$TAN" <<'EOF'
+import sys
+def rgb(h): return [int(h[i:i+2], 16) / 255 for i in (1, 3, 5)]
+def lum(c): return sum(w * (v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+                       for w, v in zip((0.2126, 0.7152, 0.0722), c))
+a, bg = rgb(sys.argv[1]), lum(rgb(sys.argv[2]))
+for _ in range(50):
+    if (bg + 0.05) / (lum(a) + 0.05) >= 3: break
+    a = [v * 0.98 for v in a]
+print("".join(f"{round(v * 255):02x}" for v in a))
+EOF
+) || ring=${accent#\#}
+
+# layout: ring + clock + date centred as one group (the date sits R+112 below iy)
+cx=$((W / 2)); iy=$((H / 2 - 56))
+pic=$((2 * (R - RW / 2)))
+
+mkdir -p "$CACHE"
+bg="$CACHE/lock-${W}x${H}.png"
+stamp="$CACHE/lock-${W}x${H}.src"
+want="$face|$(stat -Lc %Y "$face" 2>/dev/null)|$ring|$(stat -c %Y "$0")|$(stat -c %Y "$ART" 2>/dev/null)"
+if [ ! -s "$bg" ] || [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+    base="xc:$TAN"
+    [ -s "$ART" ] && hemo-edge-art "$CACHE/lock-art.png" "$W" "$H" "$ART" 2>/dev/null \
+        && base="$CACHE/lock-art.png"
+    "$IM" -size "${W}x${H}" "$base" \
+        \( -background none -density 300 "$face" -resize "${pic}x${pic}^" -gravity center \
+           -extent "${pic}x${pic}" \
+           \( -size "${pic}x${pic}" xc:black -fill white \
+              -draw "circle $((pic / 2)),$((pic / 2)) $((pic / 2)),1" -alpha off \) \
+           -compose DstIn -composite \) \
+        -compose over -gravity northwest -geometry "+$((cx - pic / 2))+$((iy - pic / 2))" -composite \
+        "$bg" 2>/dev/null && printf '%s' "$want" > "$stamp"
+fi
+[ -s "$bg" ] || exec i3lock -c "${TAN#\#}" "$@"
+
+exec i3lock -i "$bg" --color="${TAN#\#}" \
+    --indicator --force-clock --ind-pos="$cx:$iy" --radius="$R" --ring-width="$RW" \
+    --inside-color=00000000 --insidever-color="${ring}55" --insidewrong-color="${BAD}66" \
+    --ring-color="${ring}ff" --ringver-color="${ring}ff" --ringwrong-color="${BAD}ff" \
+    --keyhl-color="${TEXT}ff" --bshl-color="${MUTED}ff" \
+    --line-color=00000000 --separator-color=00000000 \
+    --verif-text="" --wrong-text="" --noinput-text="" --lock-text="" --lockfailed-text="" \
+    --time-str="%H:%M" --time-font="JetBrains Mono" --time-size=56 --time-color="${TEXT}ff" \
+    --time-pos="$cx:$((iy + R + 76))" \
+    --date-str="%a %d %b" --date-font="JetBrains Mono" --date-size=20 --date-color="${MUTED}ff" \
+    --date-pos="$cx:$((iy + R + 112))" \
+    --modif-color="${MUTED}ff" --layout-color="${MUTED}ff" \
+    "$@"

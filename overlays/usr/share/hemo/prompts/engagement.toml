@@ -1,0 +1,39 @@
+# Hemo prompt: engagement — "the IP a target sees" + the target (hemo-target), then folder.
+# Chosen in Appearance > Prompt; edit freely (picking a prompt again overwrites).
+# The target is read from its file, not $TARGET: Hemo never exports it (opsec).
+add_newline = false
+format = "${custom.engagement}${custom.visible_vpn}${custom.visible_raw}${custom.target}$directory$character"
+
+[custom.engagement]
+description = "Active Hemo engagement (slug)"
+command = "basename \"$(hemo-engagement path 2>/dev/null)\""
+when = "hemo-engagement path >/dev/null 2>&1"
+format = "[@$output]($style) "
+style = "bold accent"
+
+# "What the target sees" — one of these two shows, never both:
+#   visible_vpn renders when tun0/wg* is up (the IP a target on the VPN sees)
+#   visible_raw renders when no VPN is up (your public egress IP, as a warning
+#   in yellow — you are reaching out without the tunnel)
+[custom.visible_vpn]
+description = "VPN IP that a target on the VPN sees (bold ok = protected routing)"
+command = "hemo-bar-ip vpn"
+when = "test -n \"$(hemo-bar-ip vpn)\""
+format = "[󰒃 $output]($style) "
+style = "bold ok"
+
+[custom.visible_raw]
+description = "Public egress IP that a target on the open internet sees (bold warn = no VPN)"
+command = "hemo-bar-ip egress"
+when = "test -z \"$(hemo-bar-ip vpn)\" && test -n \"$(hemo-bar-ip visible)\""
+format = "[⇡ $output]($style) "
+style = "bold warn"
+
+[custom.target]
+command = "cat \"${XDG_CONFIG_HOME:-$HOME/.config}/hemo/target\""
+when = "test -s \"${XDG_CONFIG_HOME:-$HOME/.config}/hemo/target\""
+format = "[→ $output]($style) "
+style = "bold bad"
+
+[directory]
+format = "[$path]($style) "

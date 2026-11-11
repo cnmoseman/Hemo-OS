@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# hemo-engagement — the per-engagement workspace. Creates and switches between
+# ~/engagements/<client>/ trees and records which one is active, so shot, flameshot,
+# hemo-bom, hemo-log and tmux logging all land in the right place.
+#
+#   hemo-engagement new <client>            create + make active (baseline BOM)
+#   hemo-engagement use <client>            switch active engagement (global)
+#     new/use ask whether to start (or attach) a tmux session for it;
+#     --tmux / --no-tmux answer up front
+#   hemo-engagement use <client> --here     override for this terminal only
+#   hemo-engagement use --here              clear this terminal's override, follow global
+#   hemo-engagement detach                  opt this terminal out of the global engagement
+#   hemo-engagement                         show active + list all
+#   hemo-engagement list                    list clients
+#   hemo-engagement notes                   open the active engagement's notes
+#   hemo-engagement log <msg>               timestamped note to notes/timeline.md (same as hemo-log)
+#   hemo-engagement close                   final BOM, mark closed, clear active (global)
+#   hemo-engagement path                    print the active dir (exit 1 if none) — for tools
+#   hemo-engagement logdir                  print+create the active log dir — for tmux
+#
+# State is a file (~/.config/hemo/engagement), never an exported variable. The
+# active engagement's own `target` is mirrored to ~/.config/hemo/target on switch.
+#
+# Per-terminal overrides live in $XDG_RUNTIME_DIR/hemo/ keyed by TTY, so one
+# terminal can be in an engagement while another is not.
+set -u
+
+ROOT="$HOME/engagements"
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/hemo"
+STATE="$CFG/engagement"
+TARGET_FILE="$CFG/target"
+RUNDIR="${XDG_RUNTIME_DIR:-/tmp/hemo-$(id -u)}"
+
+die(){ echo "hemo-engagement: $*" >&2; exit 1; }
+slug(){ printf '%s' "$1" | tr ' /' '__' | tr -cd 'A-Za-z0-9._-'; }
+
+_tty_key(){
+  local t; t=$(tty 2>/dev/null) || return 1
+  case "$t" in /dev/*) ;; *) return 1 ;; esac
+  printf '%s' "$t" | tr '/' '-'
+}
+
+_maybe_tmux(){
+  # Offer tmux when entering an engagement (skip if already inside tmux, if tmux
+  # is missing, or if stdin isn't a terminal). Asks each time; --tmux / --no-tmux
+  # on new/use answer it up front. Default (Enter) is no.
+  [ -z "${TMUX:-}" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+  [ -t 0 ] || return 0
+  local s="$1" ans verb="start"
+  tmux has-session -t "=$s" 2>/dev/null && verb="attach to"
+  case "$WANT_TMUX" in
+    yes) ;;
+    no)  return 0 ;;
+    *)   printf '%s tmux session "%s"? [y/N] ' "${verb^}" "$s"
+         read -r ans || return 0
+         case "$ans" in [yY]*) ;; *) return 0 ;; esac ;;
+  esac
+  if [ "$verb" = "start" ]; then
+    exec tmux new-session -s "$s"
+  else
+    exec tmux attach-session -t "=$s"
+  fi
+}
+WANT_TMUX=ask
+
+active(){
+  # Per-terminal override takes precedence (keyed by TTY in runtime dir)
+  local k
+  if k=$(_tty_key 2>/dev/null); then
+    local pf="$RUNDIR/engagement$k"
+    if [ -f "$pf" ]; then
+      local val; val="$(cat "$pf")"
+      case "$val" in
+        __none__) return 1 ;;
+        *) [ -d "$val" ] && { printf '%s\n' "$val"; return 0; } ;;
+      esac
+    fi
+  fi
+  # Global state
+  [ -s "$STATE" ] || return 1
+  local d; d="$(cat "$STATE")"
+  [ -d "$d" ] || return 1
+  printf '%s\n' "$d"
+}
+
+set_active(){
+  mkdir -p "$CFG"; printf '%s\n' "$1" > "$STATE"
+  if [ -s "$1/target" ]; then cp -f "$1/target" "$TARGET_FILE"; else rm -f "$TARGET_FILE"; fi
+}
+
+write_templates(){
+  local d="$1"
+  [ -e "$d/notes/findings.md" ] || cat > "$d/notes/findings.md" <<'MD'
+# Findings
+
+<!-- One block per finding. Severity: critical | high | medium | low | info -->
+
+## FINDING: <short title>
+- **Severity:**
+- **Host/URL:**
+- **Summary:**
+- **Evidence:** (screenshots/ , scans/ , or a tmux-logs/ line)
+- **Reproduction:**
+- **Remediation:**
+
+MD
+  [ -e "$d/notes/hosts.md" ] || cat > "$d/notes/hosts.md" <<'MD'
+# Hosts
+
+| IP / Host | OS | Open services | Creds | Notes |
+|-----------|----|---------------|-------|-------|
+|           |    |               |       |       |
+MD
+  [ -e "$d/notes/timeline.md" ] || cat > "$d/notes/timeline.md" <<'MD'
+# Timeline
+
+<!-- Appended by `hemo-log "<note>"`, newest at the bottom. -->
+MD
+}
+
+cmd_new(){
+  local name="" s dir op
+  while [ $# -gt 0 ]; do
+    case "$1" in --tmux) WANT_TMUX=yes ;; --no-tmux) WANT_TMUX=no ;; -*) die "unknown flag: $1" ;; *) name="$1" ;; esac
+    shift
+  done
+  [ "$name" ] || die "usage: hemo-engagement new <client> [--tmux|--no-tmux]"
+  s="$(slug "$name")"; [ "$s" ] || die "unusable client name: '$name'"
+  dir="$ROOT/$s"
+  [ -e "$dir" ] && die "already exists: $dir  (switch with: hemo-engagement use $s)"
+  mkdir -p "$dir"/{scope,loot,screenshots,scans,notes,creds,tmux-logs} || die "cannot create $dir"
+  chmod 700 "$dir/creds"
+  op="$(id -un 2>/dev/null)@$(hostname 2>/dev/null || echo host)"
+  cat > "$dir/engagement.yml" <<YML
+client:   $name
+operator: $op
+started:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+closed:
+YML
+  write_templates "$dir"
+  set_active "$dir"
+  echo "engagement '$name' created and active"
+  echo "  $dir"
+  if command -v hemo-bom >/dev/null 2>&1; then
+    hemo-bom "$dir" >/dev/null 2>&1 && echo "  baseline BOM captured"
+  fi
+  _maybe_tmux "$s"
+}
+
+cmd_use(){
+  local here=0 name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --here) here=1 ;; --tmux) WANT_TMUX=yes ;; --no-tmux) WANT_TMUX=no ;; -*) die "unknown flag: $1" ;; *) name="$1" ;; esac
+    shift
+  done
+  if [ "$here" = 1 ] && [ -z "$name" ]; then
+    local k; k=$(_tty_key) || die "not a terminal"
+    rm -f "$RUNDIR/engagement$k"
+    echo "this terminal follows the global engagement again"
+    return
+  fi
+  [ "$name" ] || die "usage: hemo-engagement use [--here] <client>"
+  local s dir; s="$(slug "$name")"; dir="$ROOT/$s"
+  [ -d "$dir" ] || die "no such engagement: $name  (create with: hemo-engagement new $name)"
+  if [ "$here" = 1 ]; then
+    local k; k=$(_tty_key) || die "not a terminal — --here needs a TTY"
+    mkdir -p "$RUNDIR"
+    printf '%s\n' "$dir" > "$RUNDIR/engagement$k"
+    echo "this terminal: $name"
+    echo "  $dir"
+  else
+    set_active "$dir"
+    echo "active engagement: $name"
+    echo "  $dir"
+    # rename the current tmux session to match, if inside tmux
+    [ -n "${TMUX:-}" ] && tmux rename-session "$s" 2>/dev/null || true
+    _maybe_tmux "$s"
+  fi
+}
+
+cmd_detach(){
+  local k; k=$(_tty_key) || die "not a terminal — detach needs a TTY"
+  mkdir -p "$RUNDIR"
+  printf '__none__\n' > "$RUNDIR/engagement$k"
+  echo "this terminal: detached (no engagement)"
+}
+
+cmd_close(){
+  [ -s "$STATE" ] || die "no global engagement active (use 'eng detach' to opt this terminal out)"
+  local d; d="$(cat "$STATE")"; [ -d "$d" ] || die "engagement dir missing: $d"
+  command -v hemo-bom >/dev/null 2>&1 && hemo-bom "$d" >/dev/null 2>&1 && echo "  final BOM captured"
+  if [ -f "$d/engagement.yml" ]; then
+    sed -i "s|^closed:.*|closed:   $(date -u +%Y-%m-%dT%H:%M:%SZ)|" "$d/engagement.yml"
+  fi
+  rm -f "$STATE" "$TARGET_FILE"
+  # clean up per-terminal overrides that pointed to the closed engagement
+  if [ -d "$RUNDIR" ]; then
+    for f in "$RUNDIR"/engagement-dev-*; do
+      [ -f "$f" ] || continue
+      [ "$(cat "$f")" = "$d" ] && rm -f "$f"
+    done
+  fi
+  local s; s="$(basename "$d")"
+  echo "closed: $s  (no active engagement now)"
+  # kill the engagement's tmux session if one exists
+  if [ -n "${TMUX:-}" ] && tmux has-session -t "=$s" 2>/dev/null; then
+    tmux kill-session -t "=$s"
+  fi
+}
+
+cmd_notes(){
+  local d ed; d="$(active)" || die "no active engagement"
+  ed="$(cat "$CFG/editor" 2>/dev/null)"
+  case "$ed" in vim) ed=nvim ;; *) ed="${EDITOR:-nano}" ;; esac
+  command -v "$ed" >/dev/null 2>&1 || ed=nano
+  exec "$ed" "$d/notes/findings.md"
+}
+
+cmd_list(){
+  [ -d "$ROOT" ] || { echo "no engagements yet (hemo-engagement new <client>)"; return; }
+  local a; a="$(active 2>/dev/null || true)"
+  local found=
+  for d in "$ROOT"/*/; do
+    [ -f "$d/engagement.yml" ] || continue
+    found=1
+    local c; c="$(sed -n 's/^client:[[:space:]]*//p' "$d/engagement.yml")"
+    if [ "${d%/}" = "$a" ]; then printf '* %s\n' "${c:-$(basename "$d")}"
+    else printf '  %s\n' "${c:-$(basename "$d")}"; fi
+  done
+  [ "$found" ] || echo "no engagements yet (hemo-engagement new <client>)"
+}
+
+cmd_show(){
+  local d; if d="$(active)"; then
+    echo "active: $(sed -n 's/^client:[[:space:]]*//p' "$d/engagement.yml" 2>/dev/null || basename "$d")"
+    echo "  $d"
+  else
+    echo "no active engagement"
+  fi
+  local k
+  if k=$(_tty_key 2>/dev/null); then
+    local pf="$RUNDIR/engagement$k"
+    if [ -f "$pf" ]; then
+      local val; val="$(cat "$pf")"
+      case "$val" in
+        __none__)
+          if [ -s "$STATE" ]; then
+            echo "  (this terminal: detached; global: $(basename "$(cat "$STATE")"))"
+          else
+            echo "  (this terminal: detached)"
+          fi ;;
+        *) echo "  (this terminal only)" ;;
+      esac
+    fi
+  fi
+  echo
+  cmd_list
+}
+
+case "${1:-}" in
+  new)    shift; cmd_new "$@" ;;
+  use)    shift; cmd_use "$@" ;;
+  close)  cmd_close ;;
+  detach) cmd_detach ;;
+  notes)  cmd_notes ;;
+  list)   cmd_list ;;
+  path)   active || exit 1 ;;
+  logdir) d="$(active 2>/dev/null)"; o="${d:-$ROOT}/tmux-logs"; mkdir -p "$o"; printf '%s\n' "$o" ;;
+  log)    shift; exec hemo-log "$@" ;;
+  ""|show) cmd_show ;;
+  -h|--help|help) sed -n '2,24s/^# \{0,1\}//p' "$0" ;;
+  *) die "unknown command '$1' (try -h)" ;;
+esac

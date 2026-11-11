@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# hemo-lazyvim — set up Neovim + LazyVim as the operator's editor.
+#
+# Installs neovim (apt) and drops the pinned LazyVim starter into the operator's
+# ~/.config/nvim, then bootstraps the plugins headless so the FIRST interactive
+# launch is instant and works offline (LazyVim otherwise clones ~40 plugins and
+# compiles treesitter parsers on first open — bad in the field). The resulting
+# lazy-lock.json pins every plugin, matching Hemo's "pinned + reproducible" model.
+#
+# Everything LazyVim wants is already in the Hemo base: git, ripgrep, fd-find,
+# fzf, a C compiler (build-essential). nano stays as the root/visudo fallback.
+#
+#   hemo-lazyvim            # install + bootstrap for the operator
+#   hemo-lazyvim --skel     # also seed /etc/skel so new users inherit it
+#
+# Pin the starter with HEMO_LAZYVIM_REF (a tag/commit); default is main, and the
+# committed lazy-lock.json is what actually pins the plugin set.
+set -uo pipefail
+
+STARTER="${HEMO_LAZYVIM_REPO:-https://github.com/LazyVim/starter}"
+REF="${HEMO_LAZYVIM_REF:-}"
+RED="\033[1;31m"; OFF="\033[0m"
+say(){ printf "${RED}[hemo-lazyvim]${OFF} %s\n" "$*"; }
+
+[ "$(id -u)" -eq 0 ] || exec sudo -E "$0" "$@"
+
+SEED_SKEL=0
+[ "${1:-}" = "--skel" ] && SEED_SKEL=1
+
+# ---- who are we setting up -------------------------------------------------
+op="${SUDO_USER:-}"
+if [ -z "$op" ] || [ "$op" = root ]; then
+  for v in PKEXEC_UID SUDO_UID; do
+    u="${!v:-}"; [ -n "$u" ] && [ "$u" != 0 ] && op="$(id -nu "$u" 2>/dev/null)" && break
+  done
+fi
+[ -n "$op" ] && [ "$op" != root ] || op="$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd)"
+[ -n "$op" ] || { echo "hemo-lazyvim: no operator account found"; exit 1; }
+ophome="$(getent passwd "$op" | cut -d: -f6)"
+
+# ---- neovim ----------------------------------------------------------------
+if ! command -v nvim >/dev/null; then
+  say "installing neovim"
+  if command -v hemo-pkg >/dev/null; then hemo-pkg install neovim
+  else DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends neovim; fi
+fi
+command -v nvim >/dev/null || { echo "[!] neovim install failed"; exit 1; }
+
+# ---- lay down the LazyVim starter (per user) -------------------------------
+VENDOR="/etc/skel/.config/nvim"   # Hemo ships the pinned config here (lazy-lock.json)
+
+seed_config() {   # seed_config <nvim-config-dir> <owner-or-empty>
+  local dst="$1" owner="${2:-}"
+  if [ -f "$dst/lua/config/lazy.lua" ]; then
+    say "LazyVim already present at $dst — keeping it"
+  elif [ -f "$VENDOR/lua/config/lazy.lua" ] && [ "$dst" != "$VENDOR" ]; then
+    # preferred: copy Hemo's vendored, PINNED config (reproducible via lazy-lock.json)
+    [ -e "$dst" ] && mv "$dst" "$dst.bak.$(date +%s)" && say "backed up existing $dst"
+    say "installing Hemo's pinned LazyVim config -> $dst"
+    cp -a "$VENDOR" "$dst"
+  else
+    # fallback: clone the upstream starter (not pinned unless HEMO_LAZYVIM_REF set)
+    [ -e "$dst" ] && mv "$dst" "$dst.bak.$(date +%s)" && say "backed up existing $dst"
+    say "cloning LazyVim starter -> $dst"
+    git clone --depth 1 "$STARTER" "$dst" || return 1
+    [ -n "$REF" ] && git -C "$dst" fetch --depth 1 origin "$REF" && git -C "$dst" checkout "$REF"
+    rm -rf "$dst/.git"   # the user's config is theirs, not a fork of the starter
+  fi
+  [ -n "$owner" ] && chown -R "$owner:$owner" "$dst"
+}
+
+nvim_dir="$ophome/.config/nvim"
+install -d -o "$op" -g "$op" "$ophome/.config"
+seed_config "$nvim_dir" "$op" || { echo "[!] starter clone failed"; exit 1; }
+
+# ---- bootstrap plugins headless (as the operator) --------------------------
+# restore = install the EXACT versions in lazy-lock.json (reproducible); sync =
+# latest (only when there's no lock, i.e. the upstream-clone fallback).
+if [ -f "$nvim_dir/lazy-lock.json" ]; then
+  say "installing pinned plugins (lazy restore; needs network first time)…"
+  boot="+Lazy! restore"
+else
+  say "bootstrapping plugins (lazy sync; needs network)…"
+  boot="+Lazy! sync"
+fi
+runuser -u "$op" -- env HOME="$ophome" nvim --headless "$boot" +qa >/dev/null 2>&1 || \
+  say "plugin step reported an issue — it will finish on first interactive launch"
+# treesitter parsers for the languages Hemo scripts in (best-effort, non-fatal)
+runuser -u "$op" -- env HOME="$ophome" nvim --headless \
+  "+TSUpdateSync bash python lua go json yaml markdown" +qa >/dev/null 2>&1 || true
+
+if [ -f "$nvim_dir/lazy-lock.json" ]; then
+  say "plugins pinned in $nvim_dir/lazy-lock.json"
+fi
+
+# ---- optionally seed /etc/skel for future users ---------------------------
+if [ "$SEED_SKEL" = 1 ]; then
+  seed_config /etc/skel/.config/nvim ""
+  say "seeded /etc/skel (new users inherit LazyVim; they still bootstrap on first launch)"
+fi
+
+say "done — nvim is the editor (EDITOR/VISUAL via ~/.zshrc). nano stays for root/visudo."

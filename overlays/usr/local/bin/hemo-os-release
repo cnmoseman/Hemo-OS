@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# hemo-os-release — show the OS as "Hemo OS (Kali Rolling)" while keeping ID=kali.
+#
+# Rewrites only the display names: NAME / PRETTY_NAME in /usr/lib/os-release
+# (what fastfetch, hostnamectl, lsb_release and GRUB's menu read) and the
+# console login banner (/etc/issue, /etc/issue.net). ID=kali, ID_LIKE, VERSION
+# and the rest stay Kali's, so tools and installers that check "is this Kali?"
+# keep working.
+#
+# The originals belong to the base-files package, so each one is diverted
+# (dpkg-divert) to <file>.kali: Kali updates land there, and an apt hook re-runs
+# this script after every dpkg run to rebuild Hemo's copy from the fresh original
+# (new VERSION etc.). Safe to re-run.
+#
+#   hemo-os-release            # apply (or refresh)
+#   hemo-os-release --undo     # restore Kali's files and remove the diversions
+set -euo pipefail
+
+NAME_NEW="Hemo OS"
+PRETTY_NEW="Hemo OS (Kali Rolling)"
+FILES=(/usr/lib/os-release /etc/issue /etc/issue.net)
+QUIET=0
+
+[ "$(id -u)" -eq 0 ] || exec sudo "$0" "$@"
+log(){ [ "$QUIET" -eq 1 ] || printf '[hemo-os-release] %s\n' "$*"; }
+
+diverted(){ dpkg-divert --listpackage "$1" 2>/dev/null | grep -qx LOCAL; }
+
+# These files belong to base-files, an Essential package, so the file must never
+# be missing, not even for a moment: copy first, then divert with --no-rename
+# (dpkg warns that --rename is dangerous here).
+undo(){
+  for f in "${FILES[@]}"; do
+    if diverted "$f"; then
+      [ -f "$f.kali" ] && mv -f "$f.kali" "$f"   # atomic: Kali's file replaces ours
+      dpkg-divert --quiet --local --no-rename --remove "$f"
+      log "restored $f"
+    fi
+  done
+}
+
+# write_if_changed <path> <content>
+write_if_changed(){
+  local f=$1 body=$2 tmp
+  tmp="$(mktemp "$f.XXXXXX")"
+  printf '%s\n' "$body" > "$tmp"
+  if [ -f "$f" ] && cmp -s "$tmp" "$f"; then rm -f "$tmp"; return 0; fi
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$f"
+  log "wrote $f"
+}
+
+apply(){
+  local f
+  for f in "${FILES[@]}"; do
+    if ! diverted "$f"; then
+      [ -e "$f" ] || { log "skip $f (missing)"; continue; }
+      cp -a "$f" "$f.kali"
+      dpkg-divert --quiet --local --no-rename --divert "$f.kali" --add "$f"
+    fi
+  done
+
+  # os-release: Kali's file with only NAME / PRETTY_NAME swapped
+  if [ -f /usr/lib/os-release.kali ]; then
+    local body
+    body="$(sed -e "s|^NAME=.*|NAME=\"$NAME_NEW\"|" \
+                -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"$PRETTY_NEW\"|" /usr/lib/os-release.kali)"
+    # never install a file systemd can't parse
+    ( set +u; eval "$body" >/dev/null 2>&1 && [ "$ID" = kali ] ) \
+      || { echo "[hemo-os-release] generated os-release failed to parse — left unchanged" >&2; return 1; }
+    write_if_changed /usr/lib/os-release "$body"
+  fi
+  [ -f /etc/issue.kali ]     && write_if_changed /etc/issue     "$PRETTY_NEW \\n \\l"$'\n'
+  [ -f /etc/issue.net.kali ] && write_if_changed /etc/issue.net "$PRETTY_NEW"
+  return 0
+}
+
+case "${1:-}" in
+  --undo)  undo ;;
+  --quiet) QUIET=1; apply ;;
+  "")      apply ;;
+  *)       echo "usage: hemo-os-release [--quiet|--undo]" >&2; exit 2 ;;
+esac

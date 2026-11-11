@@ -1,0 +1,4 @@
+// Hemo: wait for the dpkg lock instead of failing at once. A role install
+// (hemo-pkg) that overlaps any other apt run otherwise fails every tool with
+// "Could not get lock /var/lib/dpkg/lock-frontend" (seen on the 0.1.0 test import).
+DPkg::Lock::Timeout "600";

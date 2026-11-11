@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# hemo-log — append a timestamped note to the active engagement's timeline.
+#   hemo-log "pivoted to DC01 via WinRM"
+#   hemo-log            # with no args, read one line from stdin
+# Notes land in <engagement>/notes/timeline.md (see hemo-engagement). This is your
+# own annotation log — not a command capture; use tmux `prefix + H` for transcripts.
+set -u
+
+d="$(hemo-engagement path 2>/dev/null)" || {
+  echo "hemo-log: no active engagement (hemo-engagement new <client>)" >&2; exit 1; }
+
+msg="$*"
+[ "$msg" ] || IFS= read -r msg || exit 0
+[ "$msg" ] || exit 0
+
+tl="$d/notes/timeline.md"
+[ -f "$tl" ] || { mkdir -p "$d/notes"; printf '# Timeline\n\n' > "$tl"; }
+printf '%s  %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$msg" >> "$tl"

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hemo Settings
+Comment=Change roles, appearance, services, hardening and more
+Exec=hemo-welcome --settings
+Icon=applications-system
+Terminal=false
+Categories=System;Settings;
+Keywords=hemo;settings;roles;appearance;services;
+StartupNotify=false

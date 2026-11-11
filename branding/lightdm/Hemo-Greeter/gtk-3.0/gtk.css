@@ -1,0 +1,78 @@
+/* Hemo LightDM greeter: Adwaita-dark, with the login box in the logo brown.
+   Installed to /usr/share/themes/Hemo-Greeter by install-branding.sh and used
+   only by lightdm-gtk-greeter (theme-name in lightdm-gtk-greeter.conf). */
+@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");
+
+@define-color hemo_box   #966b4f;   /* logo disc brown (palette.env) */
+@define-color hemo_deep  #7c5740;   /* inputs, borders */
+@define-color hemo_cream #f5f0e8;   /* toad cream: text */
+@define-color hemo_tan   #c9a37a;   /* brand accent (Saddle tan) — focus + Log In */
+
+#login_window,
+#content_frame,
+#buttonbox_frame,
+#power_window,
+#power_content_frame,
+#power_buttonbox_frame {
+    background-color: @hemo_box;
+    background-image: none;
+    color: @hemo_cream;
+    border: none;
+    box-shadow: none;
+}
+#login_window, #power_window { border-radius: 10px; }
+#content_frame, #power_content_frame {
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}
+#buttonbox_frame, #power_buttonbox_frame {
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+
+#login_window label,
+#power_window label { color: @hemo_cream; }
+
+/* user picker + username/password fields */
+#login_window entry,
+#login_window combobox button {
+    background-color: @hemo_deep;
+    background-image: none;
+    color: @hemo_cream;
+    border: 1px solid shade(@hemo_deep, 0.8);
+    box-shadow: none;
+    caret-color: @hemo_cream;
+}
+#login_window entry:focus { border-color: @hemo_tan; }
+#login_window entry image { color: @hemo_cream; }
+
+/* buttons: brand tan fill, dark-brown text — the primary action in the Hemo accent */
+#login_window button,
+#power_window button {
+    background-color: @hemo_tan;
+    background-image: none;
+    color: @hemo_box;
+    border: 1px solid shade(@hemo_tan, 0.85);
+    box-shadow: none;
+    text-shadow: none;
+}
+#login_window button label,
+#power_window button label { color: @hemo_box; }
+#login_window button:hover,
+#power_window button:hover { background-color: shade(@hemo_tan, 0.92); }
+
+#user_image_border, #user_image { background: none; box-shadow: none; border: none; }
+
+/* auth messages ("Incorrect password…") — a solid, inset bar so it can't
+   bleed over the entry or the Log In / power buttons beneath it */
+#greeter_infobar {
+    background-color: @hemo_deep;
+    background-image: none;
+    color: @hemo_cream;
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    margin: 6px 10px;
+    padding: 2px 6px;
+}
+#greeter_infobar label { color: @hemo_cream; text-shadow: none; }

@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+# hemo-guest-session — start the hypervisor's desktop guest agent for this X
+# session (host<->guest clipboard, drag-drop, display auto-resize). Desktops
+# like Xfce launch these from /etc/xdg/autostart; i3 doesn't, so the i3 config
+# runs this once at login. Only the agent for the detected hypervisor starts,
+# and X screen blanking is turned off (see below).
+
+virt=$(systemd-detect-virt --vm 2>/dev/null)
+
+# In a VM the host owns screen power: X's own blanking (screensaver + DPMS,
+# both 10 min by default) just leaves a half-redrawn, mostly black screen on
+# wake. Lock stays manual ($mod+Shift+x / the power menu).
+if [ -n "$virt" ] && [ "$virt" != none ]; then
+    xset s off s noblank -dpms
+fi
+
+case "$virt" in
+    vmware)
+        [ -x /usr/bin/vmware-user-suid-wrapper ] && /usr/bin/vmware-user-suid-wrapper
+        command -v xautoresize-launcher >/dev/null && xautoresize-launcher &
+        ;;
+    oracle)
+        [ -x /etc/X11/Xsession.d/98vboxadd-xclient ] && /etc/X11/Xsession.d/98vboxadd-xclient
+        command -v xautoresize-launcher >/dev/null && xautoresize-launcher &
+        ;;
+    kvm|qemu)
+        command -v spice-vdagent >/dev/null && spice-vdagent
+        ;;
+esac
+exit 0

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# hemo-verify — check that a downloaded Hemo release is genuine and intact.
+# Verifies the minisign signature over SHA256SUMS with the trusted public key
+# baked into this system (/usr/share/hemo/hemo-release.pub — NOT the copy that
+# came with the download), then checks the published files against SHA256SUMS.
+#
+#   hemo-verify [dir]     dir holding SHA256SUMS, SHA256SUMS.minisig and the
+#                         release files (default: current directory)
+#
+# After this passes, reassemble the image and check it against its own
+# <name>.ova.sha256 (see the release notes).
+set -u
+
+DIR="${1:-$PWD}"
+PUB="${HEMO_RELEASE_PUB:-/usr/share/hemo/hemo-release.pub}"
+SUMS="$DIR/SHA256SUMS"
+SIG="$DIR/SHA256SUMS.minisig"
+
+fail(){ printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+ok(){   printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
+
+command -v minisign >/dev/null 2>&1 || fail "minisign is not installed (sudo apt install minisign)"
+[ -f "$PUB" ]  || fail "trusted key not found: $PUB (get it from the release page)"
+[ -f "$SUMS" ] || fail "no SHA256SUMS in $DIR"
+[ -f "$SIG" ]  || fail "no SHA256SUMS.minisig in $DIR"
+
+echo "key: $(sed -n '1s/^untrusted comment: //p' "$PUB")"
+echo
+
+# 1) signature: proves SHA256SUMS was signed by the Hemo release key
+if minisign -Vm "$SUMS" -p "$PUB" -x "$SIG" >/dev/null 2>&1; then
+    ok "signature valid — SHA256SUMS was signed by the Hemo release key"
+else
+    fail "SIGNATURE INVALID — do NOT trust these files"
+fi
+
+# 2) checksums: proves the files you have match the signed list
+if ( cd "$DIR" && sha256sum -c --ignore-missing SHA256SUMS ) ; then
+    echo
+    ok "all present files match their signed checksums"
+    echo "This download is genuine and intact."
+else
+    echo
+    fail "CHECKSUM MISMATCH — a file is corrupt or tampered; re-download"
+fi

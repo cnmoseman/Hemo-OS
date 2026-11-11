@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# hemo-greeter-bg — LightDM display-setup-script (runs as root before the
+# greeter): render the login flower art (hemo-edge-art) at the greeter's
+# screen size into the background lightdm-gtk-greeter.conf points at, so the
+# flowers sit on the far edges at any resolution. Re-renders only when the
+# size or the art changes. Must always exit 0 — a failing display-setup-script
+# stops the seat and leaves no login screen.
+OUT=/var/cache/hemo/login-bg.png
+ART=/usr/share/hemo/branding/login-art.png
+
+read -r W H < <(xdpyinfo 2>/dev/null | awk '/dimensions:/{split($2,a,"x"); print a[1], a[2]}')
+if [ -n "${W:-}" ] && [ -s "$ART" ]; then
+    mkdir -p "${OUT%/*}"
+    want="${W}x${H}|$(stat -c %Y "$ART")"
+    if [ ! -s "$OUT" ] || [ "$(cat "$OUT.src" 2>/dev/null)" != "$want" ]; then
+        /usr/local/bin/hemo-edge-art "$OUT.tmp.png" "$W" "$H" "$ART" \
+            && chmod 644 "$OUT.tmp.png" && mv -f "$OUT.tmp.png" "$OUT" \
+            && printf '%s' "$want" > "$OUT.src"
+    fi
+fi
+exit 0

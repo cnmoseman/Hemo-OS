@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# hemo-identity — rename the operator user and/or the hostname on this clone,
+# so Hemo OS can be e.g. james@office instead of the default hemo@hemo.
+#
+#   sudo hemo-identity <new-username> [new-hostname]
+#   sudo hemo-identity james office        # -> james@office
+#   sudo hemo-identity james               # just the user
+#
+# Run it EARLY (right after first boot, before doing real work as the default
+# user): Linux cannot rename a user that has running processes. Pass --force to
+# terminate the old user's sessions first.
+
+set -euo pipefail
+FORCE=0; args=()
+for a in "$@"; do if [ "$a" = "--force" ]; then FORCE=1; else args+=("$a"); fi; done
+set -- "${args[@]:-}"
+
+[ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo $0 <new-username> [new-hostname]"; exit 1; }
+NEWU="${1:-}"; NEWH="${2:-}"
+[ -n "$NEWU" ] || { echo "usage: sudo hemo-identity <new-username> [new-hostname]"; exit 1; }
+
+valid(){ echo "$1" | grep -Eq '^[a-z][a-z0-9_-]{0,31}$'; }
+valid "$NEWU" || { echo "bad username '$NEWU' (lowercase, start w/ a letter, [a-z0-9_-], <=32)"; exit 1; }
+if [ -n "$NEWH" ]; then valid "$NEWH" || { echo "bad hostname '$NEWH' (same rules)"; exit 1; }; fi
+
+# figure out the current operator user
+OLDU="${SUDO_USER:-}"
+if [ -z "$OLDU" ] || [ "$OLDU" = "root" ] || ! id "$OLDU" >/dev/null 2>&1; then
+  OLDU="$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd)"
+fi
+
+if [ "$NEWU" != "$OLDU" ]; then
+  id "$NEWU" >/dev/null 2>&1 && { echo "user '$NEWU' already exists — aborting"; exit 1; }
+  if pgrep -u "$OLDU" >/dev/null 2>&1; then
+    if [ "$FORCE" = 1 ]; then
+      loginctl terminate-user "$OLDU" 2>/dev/null || pkill -KILL -u "$OLDU" 2>/dev/null || true
+      sleep 1
+    else
+      echo "user '$OLDU' has running processes."
+      echo "Log out of its graphical session (switch to a root TTY with Ctrl+Alt+F2),"
+      echo "or re-run with --force to end its sessions first."
+      exit 1
+    fi
+  fi
+  echo "renaming user: $OLDU -> $NEWU"
+  usermod  -l "$NEWU" "$OLDU"
+  usermod  -d "/home/$NEWU" -m "$NEWU"
+  groupmod -n "$NEWU" "$OLDU" 2>/dev/null || true
+  # repoint anything that hard-coded the old home
+  sed -i "s#/home/$OLDU/#/home/$NEWU/#g" "/home/$NEWU/.config/flameshot/flameshot.ini" 2>/dev/null || true
+  echo "  user renamed (log in as '$NEWU')"
+fi
+
+if [ -n "$NEWH" ]; then
+  echo "setting hostname: -> $NEWH"
+  hostnamectl set-hostname "$NEWH" 2>/dev/null || echo "$NEWH" >/etc/hostname
+  sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NEWH/" /etc/hosts 2>/dev/null || true
+fi
+
+echo "done. Log back in; reboot if the prompt/hostname doesn't fully refresh."

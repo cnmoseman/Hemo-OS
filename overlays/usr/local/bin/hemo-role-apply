@@ -1,0 +1,2020 @@
+#!/usr/bin/env python3
+"""hemo-role-apply — make a role the PRIMARY: apply its theme to the desktop.
+
+The primary role alone drives the look of the box. This writes that role's
+`profile:` block (from manifest/roles.yml) into the live config:
+
+    accent      -> kitty (cursor/url), polybar [colors].accent, rofi accent,
+                   i3 client.focused border
+    wallpaper   -> feh --bg-fill (falls back to a solid dark fill if the art
+                   file is missing — per-role wallpapers are an art TODO)
+    bookmarks   -> rebuilds /etc/firefox-esr/policies/policies.json from the
+                   master, keeping only this role's toolbar folders
+
+(Workspaces are plain numbers for every role and live as static bindings in
+i3/config — they're not themed.)
+
+Config files carry managed regions between
+    # >>> hemo:<region>   ...   # <<< hemo:<region>
+markers; only the text between the markers is rewritten, so hand edits outside
+them survive.
+
+Runs as the operator, or as root (first boot / `sudo`) targeting the operator's
+home. The Firefox policy always needs root; when not root it is re-applied via
+sudo.
+
+Usage:
+    hemo-role-apply <role>                     # first boot: apply the whole profile
+    hemo-role-apply --theme-only <role>        # theme only (used by `hemo-theme`)
+    hemo-role-apply --aspects color,icons <role>
+                                               # apply only these parts, keep the rest
+                                               # (color|wallpaper|bookmarks|icons;
+                                               #  default = all)
+    hemo-role-apply --accent '#rrggbb'         # custom accent (shaded for the mode)
+    hemo-role-apply --mode dark|light|kali|black   # switch mode, keep role + accent
+    hemo-role-apply --wallpaper /path/img.png  # set the wallpaper (Hemo art is framed)
+
+Neutral colors come from /usr/share/hemo/palette.env (Saddle), chosen by
+HEMO_MODE in theme.env. Role/custom accents are shaded per mode to stay legible
+on the window background (UI >=3:1, text >=4.5:1 contrast).
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("hemo-role-apply: needs python3-yaml\n")
+    sys.exit(2)
+
+MANIFEST_DIR = os.environ.get("HEMO_MANIFEST_DIR", "/usr/share/hemo/manifest")
+SHARE = "/usr/share/hemo"
+POLICY_MASTER = os.path.join(SHARE, "policies.master.json")
+POLICY_LIVE = "/etc/firefox-esr/policies/policies.json"
+WALLPAPER_DIR = os.path.join(SHARE, "wallpapers")
+STATE_DIR = "/var/lib/hemo"
+
+RED = "\033[1;31m"
+OFF = "\033[0m"
+
+
+def log(msg):
+    sys.stderr.write(f"{RED}[hemo-theme]{OFF} {msg}\n")
+
+
+PALETTE = os.path.join(SHARE, "palette.env")
+
+# Modes. kali = Kali's default terminal grey, black = true black; both are
+# dark-based: accents shade toward white and GTK/pywal treat them as dark.
+MODES = ("dark", "light", "kali", "black")
+_BASE = {"dark": "dark", "light": "light", "kali": "dark", "black": "dark"}
+
+
+def base(mode: str) -> str:
+    """light or dark: the polarity a mode shades/derives like."""
+    return _BASE.get(mode, "dark")
+
+
+def norm_mode(v) -> str:
+    v = str(v or "").strip().lower()
+    return v if v in MODES else ("light" if v.startswith("l") else "dark")
+
+
+# Saddle fallback if palette.env is absent (keeps the box themeable offline).
+_FALLBACK = {
+    "dark":  dict(desk="#14110e", bar="#1b1714", win="#221d19", panel="#2c2621",
+                  border="#3f372f", text="#e8dfd4", muted="#a39686",
+                  accent="#c9a37a", ok="#7cc794", warn="#e5b45a", bad="#f08a80"),
+    "light": dict(desk="#d9cfc2", bar="#e4dccf", win="#f3eee7", panel="#e8e0d5",
+                  border="#cbbfae", text="#2a241e", muted="#6b6157",
+                  accent="#b08a62", ok="#2e7d4a", warn="#9a6a00", bad="#b3261e"),
+    "kali":  dict(desk="#1b1d24", bar="#1f2129", win="#23252e", panel="#2d303b",
+                  border="#40434f", text="#ffffff", muted="#a0a3b1",
+                  accent="#367bf0", ok="#5ebdab", warn="#fea44c", bad="#ff5f5f"),
+    "black": dict(desk="#000000", bar="#0a0a0a", win="#000000", panel="#141414",
+                  border="#2a2a2a", text="#e6e6e6", muted="#8c8c8c",
+                  accent="#c9a37a", ok="#7cc794", warn="#e5b45a", bad="#f08a80"),
+}
+
+# Polybar semantic bar colors (moss = network/ok, blood = target/alert). These are
+# brand hues, not neutrals; they're shaded per mode toward legibility against the
+# bar (unchanged on a dark bar, darkened on the light bar). Canonical = dark values.
+MOSS = "#74a56e"
+BLOOD = "#c41e2f"
+
+
+def load_palette() -> dict:
+    out = {}
+    try:
+        with open(PALETTE, encoding="utf-8") as fh:
+            for ln in fh:
+                s = ln.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                parts = v.split()
+                out[k.strip()] = parts[0].strip() if parts else ""
+    except OSError:
+        pass
+    return out
+
+
+def neutrals(mode: str, pal: dict) -> dict:
+    M = mode.upper()
+    keys = ("desk", "bar", "win", "panel", "border", "text", "muted",
+            "accent", "ok", "warn", "bad")
+    return {k: (pal.get(f"HEMO_{M}_{k.upper()}") or _FALLBACK[mode][k]) for k in keys}
+
+
+def current_mode(pal: dict, home: str = "") -> str:
+    # prefer the user's own choice (rootless, set via Appearance / --mode), then
+    # the recorded theme.env, then the palette default.
+    m = (_user_mode(home) if home else "") or _read_theme_env().get("HEMO_MODE") \
+        or pal.get("HEMO_MODE_DEFAULT") or "dark"
+    return norm_mode(m)
+
+
+# ---------------------------------------------------------------- color maths
+def _rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _hx(rgb):
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(c)))) for c in rgb)
+
+
+def _lin(c):
+    c /= 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _lum(h):
+    r, g, b = _rgb(h)
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def _contrast(a, b):
+    la, lb = _lum(a), _lum(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _mix(h, toward, pct):
+    a, b = _rgb(h), _rgb(toward)
+    return _hx(tuple(a[i] + (b[i] - a[i]) * pct for i in range(3)))
+
+
+def shade(raw, win, mode, ratio):
+    """Nudge `raw` toward black (light base) / white (dark base) in 2% steps until
+    it contrasts >= `ratio` against `win`; return raw unchanged if it already does."""
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", raw or ""):
+        return raw
+    toward = "#000000" if base(mode) == "light" else "#ffffff"
+    cur = raw
+    for step in range(0, 51):
+        if _contrast(cur, win) >= ratio:
+            return cur
+        cur = _mix(raw, toward, 0.02 * step)
+    return cur
+
+
+def on_accent(fill, text_hex):
+    """Readable text to place ON an accent fill: white or body text, whichever wins."""
+    return "#ffffff" if _contrast("#ffffff", fill) >= _contrast(text_hex, fill) else text_hex
+
+
+# ---------------------------------------------------------------- neutral writers
+# Rewrite the mode-dependent neutral colors (backgrounds / borders / text) in each
+# config, keyed on the setting name so they're value-independent and idempotent.
+def _sub_keys(t, subs):
+    for pat, val in subs:
+        t = re.sub(pat, rf"\g<1>{val}", t)
+    return t
+
+
+# 16-color ANSI palette per mode = canonical Gruvbox (morhetz). Hemo keeps the
+# Saddle neutrals for the UI *and* the terminal background/foreground (set from N
+# in neu_kitty); only these 16 ANSI "font colors" come from Gruvbox — warm and
+# battle-tested for legibility, in both modes. (User call, 2026-10-06.)
+_ANSI = {
+    "dark": {   # Gruvbox Dark
+        0: "#282828", 1: "#cc241d", 2: "#98971a", 3: "#d79921",
+        4: "#458588", 5: "#b16286", 6: "#689d6a", 7: "#a89984",
+        8: "#928374", 9: "#fb4934", 10: "#b8bb26", 11: "#fabd2f",
+        12: "#83a598", 13: "#d3869b", 14: "#8ec07c", 15: "#ebdbb2",
+    },
+    "light": {  # Gruvbox Light (bright slots use the darker faded inks)
+        0: "#fbf1c7", 1: "#cc241d", 2: "#98971a", 3: "#d79921",
+        4: "#458588", 5: "#b16286", 6: "#689d6a", 7: "#7c6f64",
+        8: "#928374", 9: "#9d0006", 10: "#79740e", 11: "#b57614",
+        12: "#076678", 13: "#8f3f71", 14: "#427b58", 15: "#3c3836",
+    },
+    "kali": {   # QTerminal "Kali-Dark" — Kali's own default terminal colors
+        0: "#1f2229", 1: "#d41919", 2: "#5ebdab", 3: "#fea44c",
+        4: "#367bf0", 5: "#9755b3", 6: "#49aee6", 7: "#e6e6e6",
+        8: "#198388", 9: "#ec0101", 10: "#47d4b9", 11: "#ff8a18",
+        12: "#277fff", 13: "#962ac3", 14: "#05a1f7", 15: "#ffffff",
+    },
+}
+_ANSI["black"] = _ANSI["dark"]
+
+# Named terminal color schemes (Appearance > Terminal colors), each with a dark
+# and, where the scheme has one, a light variant picked by the mode's base. Only
+# the 16 ANSI colors; background/foreground still follow the mode. "auto" (the
+# default) = _ANSI[mode] above.
+_SCHEMES = {
+    "gruvbox": {"dark": _ANSI["dark"], "light": _ANSI["light"]},
+    "kali": {"dark": _ANSI["kali"]},
+    "dracula": {"dark": {
+        0: "#21222c", 1: "#ff5555", 2: "#50fa7b", 3: "#f1fa8c",
+        4: "#bd93f9", 5: "#ff79c6", 6: "#8be9fd", 7: "#f8f8f2",
+        8: "#6272a4", 9: "#ff6e6e", 10: "#69ff94", 11: "#ffffa5",
+        12: "#d6acff", 13: "#ff92df", 14: "#a4ffff", 15: "#ffffff"}},
+    "nord": {"dark": {
+        0: "#3b4252", 1: "#bf616a", 2: "#a3be8c", 3: "#ebcb8b",
+        4: "#81a1c1", 5: "#b48ead", 6: "#88c0d0", 7: "#e5e9f0",
+        8: "#4c566a", 9: "#bf616a", 10: "#a3be8c", 11: "#ebcb8b",
+        12: "#81a1c1", 13: "#b48ead", 14: "#8fbcbb", 15: "#eceff4"}},
+    "solarized": {
+        "dark": {
+            0: "#073642", 1: "#dc322f", 2: "#859900", 3: "#b58900",
+            4: "#268bd2", 5: "#d33682", 6: "#2aa198", 7: "#eee8d5",
+            8: "#002b36", 9: "#cb4b16", 10: "#586e75", 11: "#657b83",
+            12: "#839496", 13: "#6c71c4", 14: "#93a1a1", 15: "#fdf6e3"},
+        "light": {
+            0: "#eee8d5", 1: "#dc322f", 2: "#859900", 3: "#b58900",
+            4: "#268bd2", 5: "#d33682", 6: "#2aa198", 7: "#073642",
+            8: "#fdf6e3", 9: "#cb4b16", 10: "#586e75", 11: "#657b83",
+            12: "#839496", 13: "#6c71c4", 14: "#93a1a1", 15: "#002b36"}},
+    "tokyonight": {
+        "dark": {
+            0: "#15161e", 1: "#f7768e", 2: "#9ece6a", 3: "#e0af68",
+            4: "#7aa2f7", 5: "#bb9af7", 6: "#7dcfff", 7: "#a9b1d6",
+            8: "#414868", 9: "#f7768e", 10: "#9ece6a", 11: "#e0af68",
+            12: "#7aa2f7", 13: "#bb9af7", 14: "#7dcfff", 15: "#c0caf5"},
+        "light": {   # Tokyo Night Day
+            0: "#e9e9ed", 1: "#f52a65", 2: "#587539", 3: "#8c6c3e",
+            4: "#2e7de9", 5: "#9854f1", 6: "#007197", 7: "#6172b0",
+            8: "#a1a6c5", 9: "#f52a65", 10: "#587539", 11: "#8c6c3e",
+            12: "#2e7de9", 13: "#9854f1", 14: "#007197", 15: "#3760bf"}},
+    "catppuccin": {
+        "dark": {    # Mocha
+            0: "#45475a", 1: "#f38ba8", 2: "#a6e3a1", 3: "#f9e2af",
+            4: "#89b4fa", 5: "#f5c2e7", 6: "#94e2d5", 7: "#bac2de",
+            8: "#585b70", 9: "#f38ba8", 10: "#a6e3a1", 11: "#f9e2af",
+            12: "#89b4fa", 13: "#f5c2e7", 14: "#94e2d5", 15: "#a6adc8"},
+        "light": {   # Latte
+            0: "#5c5f77", 1: "#d20f39", 2: "#40a02b", 3: "#df8e1d",
+            4: "#1e66f5", 5: "#ea76cb", 6: "#179299", 7: "#acb0be",
+            8: "#6c6f85", 9: "#d20f39", 10: "#40a02b", 11: "#df8e1d",
+            12: "#1e66f5", 13: "#ea76cb", 14: "#179299", 15: "#bcc0cc"}},
+    "onedark": {"dark": {
+        0: "#282c34", 1: "#e06c75", 2: "#98c379", 3: "#e5c07b",
+        4: "#61afef", 5: "#c678dd", 6: "#56b6c2", 7: "#abb2bf",
+        8: "#5c6370", 9: "#e06c75", 10: "#98c379", 11: "#e5c07b",
+        12: "#61afef", 13: "#c678dd", 14: "#56b6c2", 15: "#ffffff"}},
+}
+
+
+def _appr(kitty_conf, key):
+    """A value from the user's Appearance store (~/.config/hemo/appearance.conf,
+    written by hemo-appearance), located next to the given kitty.conf."""
+    store = os.path.join(os.path.dirname(os.path.dirname(kitty_conf)), "hemo", "appearance.conf")
+    try:
+        for ln in open(store, encoding="utf-8"):
+            k, _, v = ln.strip().partition("=")
+            if k == key:
+                return v.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _term_fg(kitty_conf):
+    """User's terminal text color (Appearance > Terminal text), or "" for the mode default."""
+    v = _appr(kitty_conf, "termfg")
+    return v if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else ""
+
+
+def term_ansi(kitty_conf, mode):
+    """The 16 terminal colors: the user's chosen scheme (Appearance > Terminal
+    colors), its light variant in light-based modes when it has one; else the mode's own."""
+    s = _SCHEMES.get(_appr(kitty_conf, "termcolors"))
+    if not s:
+        return _ANSI[mode]
+    return s.get(base(mode)) or s["dark"]
+
+
+def neu_kitty(path, N, mode, uid, gid, ansi=None):
+    ansi = ansi or term_ansi(path, mode)
+    fg = _term_fg(path) or N["text"]
+    def fn(t):
+        subs = [
+            (r"(?m)^(background\s+)#[0-9a-fA-F]{6}", N["win"]),
+            (r"(?m)^(foreground\s+)#[0-9a-fA-F]{6}", fg),
+            (r"(?m)^(selection_background\s+)#[0-9a-fA-F]{6}", N["border"]),
+            (r"(?m)^(selection_foreground\s+)#[0-9a-fA-F]{6}", N["text"]),
+            (r"(?m)^(cursor_text_color\s+)#[0-9a-fA-F]{6}", N["win"]),
+        ]
+        for i in range(16):
+            subs.append((rf"(?m)^(color{i}\s+)#[0-9a-fA-F]{{6}}", ansi[i]))
+        return _sub_keys(t, subs)
+    edit_file(path, fn, uid, gid)
+
+
+def qterminal_scheme(N, fg, ansi) -> str:
+    """A qtermwidget `.colorscheme` (INI) carrying the SAME palette as the kitty
+    theme: mode background/foreground from the neutrals, the 16 ANSI "font colors"
+    as Color0..7 (normal) + Color0..7Intense (bright 8..15). Opaque so report
+    captures are consistent."""
+    def c(h):
+        return "%d,%d,%d" % _rgb(h)
+    out = ["[General]", "Description=Hemo", "Opacity=1.0", "",
+           "[Background]", f"Color={c(N['win'])}", "",
+           "[BackgroundIntense]", f"Color={c(N['win'])}", "",
+           "[Foreground]", f"Color={c(fg)}", "",
+           "[ForegroundIntense]", f"Color={c(fg)}", ""]
+    for i in range(8):
+        out += [f"[Color{i}]", f"Color={c(ansi[i])}", "",
+                f"[Color{i}Intense]", f"Color={c(ansi[i + 8])}", ""]
+    return "\n".join(out) + "\n"
+
+
+def _qtermwidget_versions() -> list:
+    """The qtermwidget major(s) installed, e.g. ['qtermwidget6'] — read from the
+    system color-scheme dirs so the user scheme lands where this qterminal scans."""
+    import glob
+    vers = sorted({os.path.basename(os.path.dirname(d))
+                   for d in glob.glob("/usr/share/qtermwidget*/color-schemes")})
+    return vers or ["qtermwidget6"]
+
+
+def _report_standard(home):
+    """Return (mode, accent, termcolors, termfg) from the report standard —
+    per-user override under ~/.config/hemo/report/, else the shipped
+    /usr/share/hemo/report/. Falls back to ('dark', '#c41e2f', 'auto', 'default')
+    if the file is missing or a key is unset."""
+    out = {"MODE": "dark", "ACCENT": "#c41e2f", "TERMCOLORS": "auto", "TERMFG": "default"}
+    for p in (os.path.join(home, ".config", "hemo", "report", "profile.env"),
+              "/usr/share/hemo/report/profile.env"):
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    if k in out:
+                        out[k] = v.strip()
+            break  # per-user wins; stop before falling through to system
+        except OSError:
+            continue
+    return out["MODE"], out["ACCENT"], out["TERMCOLORS"], out["TERMFG"]
+
+
+def _build_hemoshot_body(pal, home):
+    """Compute the HemoShot palette body (report-standard-fed). Returns None on
+    an unrecoverable config error."""
+    mode, raw, tc, tfg = _report_standard(home)
+    mode = norm_mode(mode)
+    if mode not in MODES or not re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+        return None
+    N = neutrals(mode, pal)
+    s = _SCHEMES.get(tc.lower()) if tc else None
+    ansi = (s.get(base(mode)) or s["dark"]) if s else _ANSI[mode]
+    fg = tfg if re.fullmatch(r"#[0-9a-fA-F]{6}", tfg or "") else N["text"]
+    return qterminal_scheme(N, fg, ansi)
+
+
+def apply_qterminal(home, N, mode, ansi, uid, gid, pal=None):
+    """Theme qterminal to match the role: write `Hemo.colorscheme` + a
+    report-standard `HemoShot.colorscheme`. qtermwidget >=2.4 (current Kali)
+    enumerates ONLY `/usr/share/qtermwidget*/color-schemes/`, so system-dir
+    writes are the authoritative path when running as root; per-user writes
+    stay for older qtermwidget builds."""
+    kconf = os.path.join(home, ".config", "kitty", "kitty.conf")
+    ansi = ansi or term_ansi(kconf, mode)
+    fg = _term_fg(kconf) or N["text"]
+    body = qterminal_scheme(N, fg, ansi)
+    if pal is None:
+        pal = load_palette()
+    shot = _build_hemoshot_body(pal, home)
+    is_root = os.geteuid() == 0
+    # per-user copies (forward-compat; qtermwidget pre-2.4 scanned both)
+    share = os.path.join(home, ".local", "share")
+    for v in _qtermwidget_versions():
+        d = os.path.join(share, v, "color-schemes")
+        os.makedirs(d, exist_ok=True)
+        for name, text in (("Hemo", body), ("HemoShot", shot)):
+            if text is None:
+                continue
+            p = os.path.join(d, f"{name}.colorscheme")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            if uid is not None:
+                for q in (os.path.join(share, v), d, p):
+                    try:
+                        os.chown(q, uid, gid)
+                    except OSError:
+                        pass
+    # system-wide copies — the only path qtermwidget 2.4+ actually reads.
+    # Needs root; silently no-op otherwise (user-level accent toggles can't do
+    # this, but a root re-theme/role-apply from Welcome/provision does).
+    if is_root:
+        for v in _qtermwidget_versions():
+            d = os.path.join("/usr/share", v, "color-schemes")
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                continue
+            for name, text in (("Hemo", body), ("HemoShot", shot)):
+                if text is None:
+                    continue
+                p = os.path.join(d, f"{name}.colorscheme")
+                try:
+                    with open(p, "w", encoding="utf-8") as fh:
+                        fh.write(text)
+                    os.chmod(p, 0o644)
+                except OSError:
+                    pass
+    # point qterminal at the Hemo scheme and the Nerd Font. Plain JetBrains Mono has
+    # no braille glyphs, so qterminal renders fastfetch's braille logo through a
+    # proportional fallback (DejaVu Sans) and smooshes it; JetBrainsMono Nerd Font
+    # Mono carries the braille + icons and is monospace. (kitty is left alone — it
+    # renders braille with its own built-in engine.)
+    ini = os.path.join(home, ".config", "qterminal.org", "qterminal.ini")
+    want = {"colorScheme": "Hemo", "fontFamily": "JetBrainsMono Nerd Font Mono"}
+    def _set_general(t):
+        if not re.search(r"(?m)^\[General\]\s*$", t):
+            t = "[General]\n" + t
+        for k, v in want.items():
+            if re.search(rf"(?m)^{k}=", t):
+                t = re.sub(rf"(?m)^{k}=.*$", f"{k}={v}", t)
+            else:
+                t = re.sub(r"(?m)^(\[General\]\s*)$", rf"\1\n{k}={v}", t, count=1)
+        return t
+    if os.path.exists(ini):
+        edit_file(ini, _set_general, uid, gid)
+    else:
+        os.makedirs(os.path.dirname(ini), exist_ok=True)
+        with open(ini, "w", encoding="utf-8") as fh:
+            fh.write("[General]\ncolorScheme=Hemo\n"
+                     "fontFamily=JetBrainsMono Nerd Font Mono\nfontSize=11\n")
+        if uid is not None:
+            try:
+                os.chown(ini, uid, gid)
+            except OSError:
+                pass
+
+
+def neu_polybar(path, N, mode, uid, gid):
+    # semantic bar colors, shaded for the mode so they stay legible on the bar
+    moss = shade(MOSS, N["bar"], mode, 3.0)
+    blood = shade(BLOOD, N["bar"], mode, 3.0)
+
+    def fn(t):
+        # capture the current semantic literals so inline %{F#hex} uses (which
+        # polybar can't expand from ${colors.x} inside a format) can be retinted
+        om = re.search(r"(?m)^moss\s*=\s*(#[0-9a-fA-F]{6})", t)
+        ob = re.search(r"(?m)^blood\s*=\s*(#[0-9a-fA-F]{6})", t)
+        t = _sub_keys(t, [
+            (r"(?m)^(background\s*=\s*)#[0-9a-fA-F]{6}", N["bar"]),
+            (r"(?m)^(surface\s*=\s*)#[0-9a-fA-F]{6}", N["panel"]),
+            (r"(?m)^(foreground\s*=\s*)#[0-9a-fA-F]{6}", N["text"]),
+            (r"(?m)^(muted\s*=\s*)#[0-9a-fA-F]{6}", N["muted"]),
+            (r"(?m)^(moss\s*=\s*)#[0-9a-fA-F]{6}", moss),
+            (r"(?m)^(blood\s*=\s*)#[0-9a-fA-F]{6}", blood),
+        ])
+        # retint inline literals of the old semantic colors
+        for old, new in ((om, moss), (ob, blood)):
+            if old and old.group(1).lower() != new.lower():
+                for v in {old.group(1), old.group(1).lower(), old.group(1).upper()}:
+                    t = t.replace("%{F" + v + "}", "%{F" + new + "}")
+        # separator glyph color (inline %{F#hex})
+        return re.sub(r'(separator\s*=\s*"%\{F)#[0-9a-fA-F]{6}(\})',
+                      rf'\g<1>{N["border"]}\g<2>', t)
+    edit_file(path, fn, uid, gid)
+
+
+def neu_rofi(path, N, uid, gid):
+    def fn(t):
+        return _sub_keys(t, [
+            (r"(?m)^(\s*bg:\s*)#[0-9a-fA-F]{6}", N["bar"]),
+            (r"(?m)^(\s*surface:\s*)#[0-9a-fA-F]{6}", N["panel"]),
+            (r"(?m)^(\s*line:\s*)#[0-9a-fA-F]{6}", N["border"]),
+            (r"(?m)^(\s*fg:\s*)#[0-9a-fA-F]{6}", N["text"]),
+            (r"(?m)^(\s*muted:\s*)#[0-9a-fA-F]{6}", N["muted"]),
+            (r"(?m)^(\s*border-color:\s*)#[0-9a-fA-F]{6}", N["border"]),
+        ])
+    edit_file(path, fn, uid, gid)
+
+
+def neu_dunst(path, N, uid, gid):
+    def fn(t):
+        return _sub_keys(t, [
+            (r'(?m)^(\s*frame_color\s*=\s*")#[0-9a-fA-F]{6}', N["border"]),
+            (r'(?m)^(\s*background\s*=\s*")#[0-9a-fA-F]{6}', N["bar"]),
+            # all urgencies -> readable body text for the mode (loses the subtle
+            # low-urgency muted tint, but keeps text legible on the light bar)
+            (r'(?m)^(\s*foreground\s*=\s*")#[0-9a-fA-F]{6}', N["text"]),
+        ])
+    edit_file(path, fn, uid, gid)
+
+
+def apply_dunst(path, ui, uid, gid):
+    """dunst's progress-bar highlight follows the shaded accent (per mode/role)."""
+    def fn(t):
+        return re.sub(r'(?m)^(\s*highlight\s*=\s*")#[0-9a-fA-F]{6}', rf'\g<1>{ui}', t)
+    edit_file(path, fn, uid, gid)
+
+
+def neu_gtk_defines(path, N, selfg, uid, gid):
+    """gtk.css carries all neutrals as @define-color; rewrite those lines."""
+    def fn(t):
+        return _sub_keys(t, [
+            (r"(?m)^(@define-color theme_bg_color\s+)#[0-9a-fA-F]{6}", N["win"]),
+            (r"(?m)^(@define-color theme_base_color\s+)#[0-9a-fA-F]{6}", N["panel"]),
+            (r"(?m)^(@define-color theme_fg_color\s+)#[0-9a-fA-F]{6}", N["text"]),
+            (r"(?m)^(@define-color theme_text_color\s+)#[0-9a-fA-F]{6}", N["text"]),
+            (r"(?m)^(@define-color theme_selected_fg_color\s+)#[0-9a-fA-F]{6}", selfg),
+            (r"(?m)^(@define-color borders\s+)#[0-9a-fA-F]{6}", N["border"]),
+            (r"(?m)^(@define-color unfocused_borders\s+)#[0-9a-fA-F]{6}", N["border"]),
+            (r"(?m)^(@define-color hemo_bar\s+)#[0-9a-fA-F]{6}", N["bar"]),
+            (r"(?m)^(@define-color hemo_muted\s+)#[0-9a-fA-F]{6}", N["muted"]),
+        ])
+    edit_file(path, fn, uid, gid)
+
+
+# ---------------------------------------------------------------- target user
+def target_user() -> str:
+    # 1) explicit caller: sudo sets SUDO_USER, pkexec sets PKEXEC_UID (the welcome
+    #    installs via pkexec, which does NOT set SUDO_USER — honouring PKEXEC_UID
+    #    keeps us on the real operator instead of the lowest-uid account).
+    u = os.environ.get("SUDO_USER", "")
+    if u and u != "root":
+        return u
+    for var in ("PKEXEC_UID", "SUDO_UID"):
+        v = os.environ.get(var, "")
+        if v.isdigit() and int(v) != 0:
+            try:
+                return pwd.getpwuid(int(v)).pw_name
+            except KeyError:
+                pass
+    if os.geteuid() == 0:
+        # 2) whoever is running the live desktop (the session we want to re-theme)
+        try:
+            pids = subprocess.check_output(["pgrep", "-x", "i3"], text=True).split()
+            if pids:
+                uid = os.stat(f"/proc/{int(pids[0])}").st_uid
+                return pwd.getpwuid(uid).pw_name
+        except Exception:
+            pass
+        # 3) last resort: lowest uid in the human range (NOT uid-ordered by default)
+        humans = sorted((p for p in pwd.getpwall() if 1000 <= p.pw_uid < 65534),
+                        key=lambda p: p.pw_uid)
+        if humans:
+            return humans[0].pw_name
+    return pwd.getpwuid(os.geteuid()).pw_name
+
+
+def load_roles() -> dict:
+    with open(os.path.join(MANIFEST_DIR, "roles.yml"), encoding="utf-8") as fh:
+        return (yaml.safe_load(fh) or {}).get("roles", {}) or {}
+
+
+def replace_block(text: str, region: str, body: str) -> str:
+    """Replace content between the region's markers, or append the block."""
+    start = f"# >>> hemo:{region}"
+    end = f"# <<< hemo:{region}"
+    block = f"{start}\n{body}\n{end}"
+    pat = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
+    if pat.search(text):
+        return pat.sub(lambda _m: block, text)
+    sep = "" if text.endswith("\n") else "\n"
+    return f"{text}{sep}\n{block}\n"
+
+
+def edit_file(path, fn, uid=None, gid=None):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            old = fh.read()
+    except FileNotFoundError:
+        log(f"skip (not found): {path}")
+        return
+    new = fn(old)
+    if new == old:
+        return
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(new)
+    if uid is not None:
+        try:
+            os.chown(path, uid, gid)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- appliers
+def apply_kitty(path, ui, txt, uid, gid):
+    def fn(t):
+        t = re.sub(r"(?m)^(cursor\s+)#[0-9a-fA-F]{6}\s*$", rf"\g<1>{ui}", t)       # UI
+        t = re.sub(r"(?m)^(url_color\s+)#[0-9a-fA-F]{6}\s*$", rf"\g<1>{txt}", t)   # link text
+        return t
+    edit_file(path, fn, uid, gid)
+
+
+def apply_polybar(path, accent, uid, gid):
+    def fn(t):
+        m = re.search(r"(?m)^accent\s*=\s*(#[0-9a-fA-F]{6})\s*$", t)
+        old = m.group(1) if m else None
+        t = re.sub(r"(?m)^(accent\s*=\s*)#[0-9a-fA-F]{6}\s*$", rf"\g<1>{accent}", t)
+        # inline icon colors that use the accent (cpu/memory/egress modules write
+        # it as a literal %{F#hex} because polybar won't expand ${colors.accent}
+        # inside a format string) — retint them too. Semantic colors (moss=network,
+        # blood=target) are different hexes and stay put.
+        if old and old.lower() != accent.lower():
+            for o in {old, old.lower(), old.upper()}:
+                t = t.replace("%{F" + o + "}", "%{F" + accent + "}")
+        return t
+    edit_file(path, fn, uid, gid)
+
+
+def apply_polybar_focus(path, N, mode, ui, selfg, uid, gid):
+    """Focused-workspace tile ([colors] focus-bg / focus-fg). Dark bases keep the
+    accent text on the panel tint; on the light bar that tint is nearly the bar's
+    own color and the accent text washes out, so light bases fill the tile with
+    the accent and put on-accent text over it."""
+    if base(mode) == "light":
+        bg, fg = ui, selfg
+    else:
+        bg, fg = N["panel"], ui
+    def fn(t):
+        for key, val in (("focus-fg", fg), ("focus-bg", bg)):
+            pat = rf"(?m)^({re.escape(key)}\s*=\s*)#[0-9a-fA-F]{{6}}"
+            if re.search(pat, t):
+                t = re.sub(pat, rf"\g<1>{val}", t)
+            else:   # older config without the keys: add them under [colors]
+                t = re.sub(r"(?m)^(\[colors\]\s*)$", rf"\g<1>\n{key:<10} = {val}", t, count=1)
+        return t
+    edit_file(path, fn, uid, gid)
+
+
+def write_generated(path, body, uid, gid):
+    """(Re)write a whole generated CSS-style file, owned by the user."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("/* generated by hemo-role-apply — do not edit; set via `hemo-theme <role>` */\n" + body)
+    if uid is not None:
+        try:
+            os.chown(path, uid, gid)
+        except OSError:
+            pass
+
+
+def apply_rofi(path, ui, txt, on, uid, gid):
+    write_generated(path, f"* {{\n    hemo-accent: {ui};\n    hemo-accent-text: {txt};\n"
+                          f"    hemo-accent-on: {on};\n}}\n", uid, gid)
+
+
+# Firefox chrome theme (userChrome.css). Recolors the browser chrome to the Hemo
+# mode neutrals + the role accent, so Firefox matches the rest of the desktop
+# instead of the default grey. Enabled per profile via a user.js pref (no system
+# autoconfig — that can break Firefox startup). Both lightweight-theme CSS vars
+# and direct element backgrounds are set, for robustness across Firefox versions.
+_FF_USERCHROME = """/* generated by hemo-role-apply — do not edit; set via `hemo-theme <role>` */
+@namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
+:root {{
+    --lwt-accent-color: {win} !important;
+    --lwt-text-color: {text} !important;
+    --toolbar-bgcolor: {panel} !important;
+    --toolbar-color: {text} !important;
+    --toolbarbutton-icon-fill: {text} !important;
+    --toolbar-field-background-color: {bar} !important;
+    --toolbar-field-color: {text} !important;
+    --toolbar-field-focus-background-color: {bar} !important;
+    --toolbar-field-border-color: {border} !important;
+    --toolbar-field-focus-border-color: {accent} !important;
+    --tab-selected-bgcolor: {panel} !important;
+    --lwt-tab-line-color: {accent} !important;
+    --tabpanel-background-color: {win} !important;
+    --lwt-toolbar-field-background-color: {bar} !important;
+}}
+#navigator-toolbox {{ background-color: {win} !important; }}
+#TabsToolbar, #tabbrowser-tabs {{ background-color: {win} !important; }}
+#nav-bar, #PersonalToolbar, #toolbar-menubar {{
+    background-color: {panel} !important;
+    color: {text} !important;
+}}
+.tabbrowser-tab[selected] .tab-background,
+.tabbrowser-tab[visuallyselected] .tab-background {{
+    background-color: {panel} !important;
+    box-shadow: inset 0 2px 0 0 {accent} !important;
+}}
+.tabbrowser-tab {{ color: {text} !important; }}
+#urlbar, #searchbar {{ color: {text} !important; }}
+:root {{
+    --toolbar-field-focus-background-color: {bar} !important;
+    --toolbar-field-focus-color: {text} !important;
+}}
+/* keep the URL bar the theme colour in EVERY state (was turning white on focus) */
+#urlbar-background,
+#urlbar[focused] #urlbar-background,
+#urlbar[focused="true"] #urlbar-background,
+#urlbar[open] #urlbar-background,
+#searchbar {{
+    background-color: {bar} !important;
+    background-image: none !important;
+    border-color: {border} !important;
+}}
+#urlbar[focused] #urlbar-background,
+#urlbar[focused="true"] #urlbar-background,
+#urlbar[open] #urlbar-background,
+#searchbar:focus-within {{
+    border-color: {accent} !important;
+    box-shadow: 0 0 0 1px {accent} !important;
+}}
+#urlbar-input, .urlbar-input, #urlbar-input::placeholder, .searchbar-textbox {{ color: {text} !important; }}
+/* every URL-bar icon (incl. the left search glass) stays the theme colour, not white */
+#urlbar .urlbar-icon,
+#urlbar-input-container .urlbar-icon,
+#urlbar-search-button, .urlbar-search-icon,
+.urlbarView-type-icon, #identity-icon, #tracking-protection-icon,
+#page-action-buttons .urlbar-icon,
+#urlbar image, #searchbar image {{
+    fill: {text} !important;
+    color: {text} !important;
+    -moz-context-properties: fill, fill-opacity !important;
+}}
+/* the magnifying-glass "search mode switcher" pill on the left (white box) */
+#urlbar-searchmode-switcher,
+#searchmode-switcher,
+.urlbar-searchmode-switcher,
+#urlbar-searchmode-switcher-button,
+#urlbar-search-mode-indicator {{
+    background-color: transparent !important;
+    background-image: none !important;
+    color: {text} !important;
+}}
+#urlbar-searchmode-switcher:hover,
+#urlbar-searchmode-switcher-button:hover {{ background-color: {border} !important; }}
+#urlbar-searchmode-switcher image,
+#urlbar-searchmode-switcher .urlbar-icon,
+#urlbar-searchmode-switcher-icon,
+#urlbar-searchmode-switcher-dropmarker,
+#urlbar-search-mode-indicator-title {{
+    fill: {text} !important;
+    color: {text} !important;
+    -moz-context-properties: fill !important;
+}}
+/* popups / menus / doorhangers / app menu */
+:root {{
+    --arrowpanel-background: {panel} !important;
+    --arrowpanel-color: {text} !important;
+    --arrowpanel-border-color: {border} !important;
+    --panel-background: {panel} !important;
+    --panel-color: {text} !important;
+}}
+menupopup, panel, .panel-arrowcontent {{
+    background-color: {panel} !important;
+    color: {text} !important;
+}}
+/* the app (hamburger) menu + overflow bodies — the grey layer inside the panel */
+panelview, .panel-subview-body, .panelContent, .cui-widget-panelview,
+#appMenu-multiView, #appMenu-popup .panel-subview-body,
+#widget-overflow, #widget-overflow-mainView, #protections-popup {{
+    background-color: {panel} !important;
+    color: {text} !important;
+}}
+menuitem, menu, .subviewbutton, .panel-subview-body toolbarbutton,
+toolbarbutton.subviewbutton, .subviewbutton label, .panel-banner-item {{
+    color: {text} !important;
+    background-color: transparent !important;
+}}
+menuitem[_moz-menuactive="true"], menu[_moz-menuactive="true"],
+.subviewbutton:hover, toolbarbutton.subviewbutton:hover,
+.panel-subview-body toolbarbutton:hover, .panel-banner-item:hover {{
+    background-color: {accent} !important;
+    color: {selfg} !important;
+}}
+.subviewbutton:hover label, toolbarbutton.subviewbutton:hover label {{ color: {selfg} !important; }}
+menuseparator, toolbarseparator {{ border-color: {border} !important; }}
+/* address-bar suggestions dropdown */
+.urlbarView {{ background-color: {panel} !important; }}
+.urlbarView-row {{ color: {text} !important; }}
+.urlbarView-row:hover {{ background-color: {border} !important; }}
+.urlbarView-row[selected] {{ background-color: {accent} !important; }}
+.urlbarView-row[selected] .urlbarView-title,
+.urlbarView-row[selected] .urlbarView-url,
+.urlbarView-row[selected] .urlbarView-title-separator {{ color: {selfg} !important; }}
+/* findbar (Ctrl+F) */
+findbar {{
+    background-color: {panel} !important;
+    color: {text} !important;
+    border-top: 1px solid {border} !important;
+}}
+.findbar-textbox {{
+    background-color: {bar} !important;
+    color: {text} !important;
+    border: 1px solid {border} !important;
+}}
+.findbar-textbox:focus {{ border-color: {accent} !important; }}
+"""
+
+
+_FF_USERCONTENT = """/* generated by hemo-role-apply — do not edit; set via `hemo-theme <role>` */
+@-moz-document url("about:blank"),
+               url("about:home"),
+               url("about:newtab"),
+               url-prefix("about:privatebrowsing") {{
+    :root, html, body, .activity-stream, main, [class*="outer-wrapper"] {{
+        background-color: {win} !important;
+        color: {text} !important;
+    }}
+    /* new-tab search bar (the "search handoff" button) */
+    .search-handoff-button,
+    input.search-handoff-button,
+    .search-wrapper input,
+    .search-inner-wrapper .search-handoff-button {{
+        background-color: {bar} !important;
+        color: {text} !important;
+        border: 1px solid {border} !important;
+        box-shadow: none !important;
+    }}
+    .search-handoff-button:hover {{ border-color: {accent} !important; }}
+    .search-handoff-button:focus,
+    .search-handoff-button.focused,
+    .search-wrapper input:focus {{
+        border-color: {accent} !important;
+        box-shadow: 0 0 0 1px {accent} !important;
+    }}
+    .search-handoff-button .fake-caret {{ background-color: {text} !important; }}
+    .search-wrapper .search-button {{ fill: {text} !important; }}
+    /* top sites ("most frequent") tiles: uniform Hemo icon background + accent hover */
+    .top-site-button .tile,
+    .top-site-outer .tile,
+    .top-site-outer .add-button {{
+        background-color: {panel} !important;
+        box-shadow: inset 0 0 0 1px {border} !important;
+    }}
+    .top-site-outer:hover .tile,
+    .top-site-outer:hover .add-button {{
+        box-shadow: inset 0 0 0 1px {accent} !important;
+    }}
+    .top-site-outer .title,
+    .top-site-outer .title span,
+    .top-sites-list .title {{ color: {text} !important; }}
+}}
+"""
+
+
+def apply_firefox(home, mode, N, ui, selfg, uid, gid):
+    """Write userChrome.css into every Firefox profile so the browser chrome
+    matches the Hemo theme (mode neutrals + role accent), not the default grey.
+    A delimited block in user.js enables userChrome/userContent and sets the
+    dark/light base; prefs outside the block are preserved. userContent.css
+    darkens Firefox's own pages (new tab / about:) so the body isn't grey."""
+    import glob
+    css = _FF_USERCHROME.format(win=N["win"], bar=N["bar"], panel=N["panel"],
+                                border=N["border"], text=N["text"], accent=ui, selfg=selfg)
+    content_css = _FF_USERCONTENT.format(win=N["win"], bar=N["bar"], panel=N["panel"], border=N["border"],
+                                         text=N["text"], accent=ui)
+    dark = 0 if base(mode) == "light" else 1
+    # content/new-tab color-scheme: 0=dark 1=light (both prefs use this scale), so
+    # the body matches the chrome instead of staying grey. Chrome via systemUsesDarkTheme.
+    content = 1 if base(mode) == "light" else 0
+    block = ("// >>> hemo (managed — do not edit)\n"
+             'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);\n'
+             'user_pref("ui.systemUsesDarkTheme", %d);\n'
+             'user_pref("layout.css.prefers-color-scheme.content-override", %d);\n'
+             'user_pref("browser.theme.content-theme", %d);\n'
+             "// <<< hemo\n") % (dark, content, content)
+    # Template for profiles that don't exist yet: the firefox-esr wrapper seeds a
+    # fresh home's first profile from these, so it is themed on the first window.
+    tdir = os.path.join(home, ".config", "hemo", "firefox")
+    try:
+        os.makedirs(tdir, exist_ok=True)
+        for name, body in (("userChrome.css", css), ("userContent.css", content_css),
+                           ("user.js", block)):
+            with open(os.path.join(tdir, name), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        _chown_all(uid, gid, os.path.dirname(tdir), tdir,
+                   *[os.path.join(tdir, n) for n in ("userChrome.css", "userContent.css", "user.js")])
+    except OSError:
+        pass
+    ffdir = os.path.join(home, ".mozilla", "firefox")
+    for prof in glob.glob(os.path.join(ffdir, "*")):
+        if not (os.path.isfile(os.path.join(prof, "prefs.js"))
+                or os.path.isfile(os.path.join(prof, "times.json"))):
+            continue                       # not a real profile dir
+        chrome = os.path.join(prof, "chrome")
+        cssf = os.path.join(chrome, "userChrome.css")
+        contentf = os.path.join(chrome, "userContent.css")
+        userjs = os.path.join(prof, "user.js")
+        try:
+            os.makedirs(chrome, exist_ok=True)
+            with open(cssf, "w", encoding="utf-8") as fh:
+                fh.write(css)
+            with open(contentf, "w", encoding="utf-8") as fh:
+                fh.write(content_css)
+            try:
+                cur = open(userjs, encoding="utf-8").read()
+            except OSError:
+                cur = ""
+            cur = re.sub(r"// >>> hemo.*?// <<< hemo\n", "", cur, flags=re.S).rstrip("\n")
+            with open(userjs, "w", encoding="utf-8") as fh:
+                fh.write((cur + "\n" + block) if cur else block)
+            if uid is not None:
+                for f in (chrome, cssf, contentf, userjs):
+                    try:
+                        os.chown(f, uid, gid)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+
+def apply_gtk(path, ui, uid, gid):
+    write_generated(path, f"@define-color hemo_accent {ui};\n", uid, gid)
+
+
+def apply_icon_theme(path, icons, uid, gid, home=None, user=None):
+    """Point gtk-icon-theme-name at the role's Flat-Remix color variant, so the
+    folder/app icons match the accent. No-op if the variant isn't installed.
+
+    When the user has a Hemo-Net theme (accent Nerd-glyph network icons for the
+    nm-applet tray), keep *that* as the active theme — it inherits the Flat-Remix
+    variant — and just re-point its inherited base + regenerate the accent glyphs
+    so the tray icon re-themes live with the role."""
+    if not icons or not os.path.isdir(os.path.join("/usr/share/icons", icons)):
+        if icons:
+            log(f"icon theme '{icons}' not installed — leaving icons as-is")
+        return
+    hemonet = os.path.join(home, ".local/share/icons/Hemo-Net") if home else None
+    use_hemonet = bool(hemonet and os.path.isdir(hemonet))
+    target = "Hemo-Net" if use_hemonet else icons
+    def fn(t):
+        if re.search(r"(?m)^\s*gtk-icon-theme-name\s*=", t):
+            return re.sub(r"(?m)^(\s*gtk-icon-theme-name\s*=\s*).*$", rf"\g<1>{target}", t)
+        # no line yet: add it under [Settings] (or at the top if that's missing)
+        if re.search(r"(?m)^\[Settings\]\s*$", t):
+            return re.sub(r"(?m)^(\[Settings\]\s*)$", rf"\g<1>\ngtk-icon-theme-name={target}", t, count=1)
+        return f"[Settings]\ngtk-icon-theme-name={target}\n" + t
+    edit_file(path, fn, uid, gid)
+    if use_hemonet and user:
+        # rebuild Hemo-Net inheriting the new variant, re-render accent glyphs,
+        # and bounce nm-applet — all in the user's live X session.
+        _run_as_user(user, ["hemo-net-icons", "--base", icons])
+
+
+def apply_i3(path, ui, N, uid, gid):
+    title = on_accent(ui, N["text"])          # focused titlebar text, on the accent
+    bad = N["bad"]
+    colors = (
+        f"client.focused          {ui} {ui} {title} {ui} {ui}\n"
+        f"client.focused_inactive {N['border']} {N['bar']} {N['muted']} {N['border']} {N['border']}\n"
+        f"client.unfocused        {N['win']} {N['desk']} {N['muted']} {N['win']} {N['win']}\n"
+        f"client.urgent           {bad} {bad} {on_accent(bad, N['text'])} {bad} {bad}"
+    )
+    def fn(t):
+        return replace_block(t, "colors", colors)
+    edit_file(path, fn, uid, gid)
+
+
+# Wallpaper treatment: recolor the art's (near-black) background to this tan and
+# fill the whole screen with the same tan, so the subject keeps its zoomed-out size
+# but floats on a seamless light field instead of a black box with margins.
+WALLPAPER_PAD = os.environ.get("HEMO_WALLPAPER_PAD", "28%")
+WALLPAPER_BG = os.environ.get("HEMO_WALLPAPER_BG", "#d9c7a3")   # light tan
+WALLPAPER_FG = os.environ.get("HEMO_WALLPAPER_FG", "#fbf8ee")   # crisp cream (subject)
+
+
+def _is_hemo_art(path):
+    """Hemo's own lizard art (role wallpapers + the stock background) gets the
+    zoomed-out framing; anyone else's photo is just filled to the screen."""
+    real = os.path.realpath(path)
+    return (real.startswith(os.path.realpath(WALLPAPER_DIR) + os.sep)
+            or os.path.basename(real).startswith("hemo-bg"))
+
+
+def _write_user_wallpaper(home, path, uid, gid):
+    """Remember the source image (not the padded cache) so pywal derives from it."""
+    p = os.path.join(home, ".config", "hemo", "wallpaper")
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as fh:
+            fh.write(path + "\n")
+        if uid is not None:
+            os.chown(p, uid, gid)
+    except OSError:
+        pass
+
+
+def _read_user_wallpaper(home):
+    try:
+        v = open(os.path.join(home, ".config", "hemo", "wallpaper")).read().strip()
+        return v if os.path.isfile(v) else ""
+    except OSError:
+        return ""
+
+
+def apply_wallpaper(home, wallpaper, desk, user, uid=None, gid=None):
+    # a bare name is a role wallpaper in WALLPAPER_DIR; an absolute path is any image
+    if wallpaper and os.path.isabs(wallpaper):
+        path = wallpaper
+    else:
+        path = os.path.join(WALLPAPER_DIR, wallpaper) if wallpaper else ""
+    bg = WALLPAPER_BG
+    if path and os.path.exists(path) and not _is_hemo_art(path):
+        _write_user_wallpaper(home, path, uid, gid)
+        _run_as_user(user, ["feh", "--bg-fill", path])   # writes ~/.fehbg
+        return
+    if path and os.path.exists(path):
+        _write_user_wallpaper(home, path, uid, gid)
+        src = path
+        if shutil.which("convert"):
+            out = os.path.join(home, ".cache", "hemo", "wallpaper.png")
+            try:
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                # Sample the top-left corner. A near-black corner = a cream-on-black
+                # silhouette (recolor it to tan). Otherwise the art already has its
+                # own background colour — keep it and pad with that colour.
+                corner = subprocess.check_output(
+                    ["convert", src, "-format", "%[pixel:p{2,2}]", "info:"],
+                    text=True).strip()
+                m = re.search(r"(\d+)[,\s]+(\d+)[,\s]+(\d+)", corner)
+                cr = tuple(int(m.group(i)) for i in (1, 2, 3)) if m else (0, 0, 0)
+                corner_hex = _hx(cr)
+                if _lum(corner_hex) < 0.06:          # silhouette: recolor to tan
+                    subprocess.call(["convert", src, "-sigmoidal-contrast", "10x45%",
+                                     "-fuzz", "38%", "-fill", WALLPAPER_FG, "-opaque", "#ffffff",
+                                     "-fuzz", "30%", "-fill", bg, "-opaque", "#000000",
+                                     "-bordercolor", bg, "-border", WALLPAPER_PAD,
+                                     "+repage", out],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:                                 # already coloured: just frame it
+                    bg = corner_hex
+                    subprocess.call(["convert", src, "-bordercolor", bg,
+                                     "-border", WALLPAPER_PAD, "+repage", out],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if os.path.exists(out):
+                    if uid is not None:
+                        try:
+                            os.chown(out, uid, gid)
+                            os.chown(os.path.dirname(out), uid, gid)
+                        except OSError:
+                            pass
+                    src = out
+            except Exception:
+                pass
+        cmd = ["feh", "--bg-max", "--image-bg", bg, src]
+    else:
+        # no wallpaper art -> solid tan fill
+        cmd = ["xsetroot", "-solid", bg]
+        log(f"wallpaper '{wallpaper}' missing — solid fill ({bg})")
+    # run inside the operator's X session if we can reach it
+    _run_as_user(user, cmd)
+
+
+def _session_xenv(user):
+    """DISPLAY + XAUTHORITY of the user's live X session, read from the i3 process
+    environ. Without XAUTHORITY a root->user runuser can't reach X, so polybar/feh
+    silently fail to restart (the bar/wallpaper then look stale after a re-theme)."""
+    disp = os.environ.get("DISPLAY", ":0")
+    xauth = os.environ.get("XAUTHORITY", "")
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+        for pid in subprocess.check_output(["pgrep", "-x", "i3"], text=True).split():
+            if os.stat(f"/proc/{int(pid)}").st_uid != uid:
+                continue
+            env = {}
+            with open(f"/proc/{int(pid)}/environ", "rb") as fh:
+                for kv in fh.read().split(b"\0"):
+                    if b"=" in kv:
+                        k, _, v = kv.partition(b"=")
+                        env[k.decode(errors="replace")] = v.decode(errors="replace")
+            disp = env.get("DISPLAY", disp)
+            xauth = env.get("XAUTHORITY", xauth)
+            break
+    except Exception:
+        pass
+    if not xauth:
+        xauth = os.path.join(pwd.getpwnam(user).pw_dir, ".Xauthority")
+    return disp, xauth
+
+
+def _run_as_user(user, cmd):
+    me = pwd.getpwuid(os.geteuid()).pw_name
+    disp, xauth = _session_xenv(user)
+    try:
+        if user == me and os.environ.get("DISPLAY"):
+            subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # exec the argv directly after setting the X env — NO `sh -c`, so a
+            # literal '#rrggbb' arg isn't eaten as a shell comment, and a caller
+            # that wants a shell just passes ["sh","-c","…"] itself.
+            subprocess.call(
+                ["runuser", "-u", user, "--", "env",
+                 f"DISPLAY={disp}", f"XAUTHORITY={xauth}", *cmd],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        pass  # no live session (first boot) — i3's exec ~/.fehbg applies it next login
+
+
+def apply_bookmarks(folders):
+    """Rebuild the Firefox policy from the master, keeping only `folders`."""
+    if os.geteuid() != 0:
+        # re-apply just this part via sudo
+        subprocess.call(["sudo", sys.argv[0], "--bookmarks-only",
+                         ",".join(folders)])
+        return
+    if not os.path.exists(POLICY_MASTER):
+        log(f"policy master missing: {POLICY_MASTER} — bookmarks unchanged")
+        return
+    with open(POLICY_MASTER, encoding="utf-8") as fh:
+        policy = json.load(fh)
+    keep = set(folders)
+    marks = policy.get("policies", {}).get("Bookmarks", [])
+    policy["policies"]["Bookmarks"] = [b for b in marks if b.get("Folder") in keep]
+    os.makedirs(os.path.dirname(POLICY_LIVE), exist_ok=True)
+    with open(POLICY_LIVE, "w", encoding="utf-8") as fh:
+        json.dump(policy, fh, indent=2)
+    log(f"Firefox bookmark folders: {', '.join(folders)}")
+
+
+def _read_theme_env() -> dict:
+    """Read the last-recorded theme.env (HEMO_PRIMARY / ACCENT / WALLPAPER)."""
+    out = {}
+    try:
+        for ln in open(os.path.join(STATE_DIR, "theme.env"), encoding="utf-8"):
+            k, _, v = ln.strip().partition("=")
+            if k:
+                out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def record_primary(role, accent, wallpaper, mode):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(os.path.join(STATE_DIR, "primary"), "w") as fh:
+        fh.write(role + "\n")
+    env = os.path.join(STATE_DIR, "theme.env")
+    with open(env, "w") as fh:
+        fh.write(f"HEMO_PRIMARY={role}\nHEMO_ACCENT={accent}\n"
+                 f"HEMO_WALLPAPER={wallpaper}\nHEMO_MODE={mode}\n")
+
+
+def _write_all(home, N, ansi, mode, ui, txt, selfg, uid, gid):
+    """Write every neutral + accent across the configs, from an explicit palette.
+    Shared by apply_color (Saddle) and the pywal path."""
+    C = lambda *p: os.path.join(home, ".config", *p)
+    neu_kitty(C("kitty/kitty.conf"), N, mode, uid, gid, ansi=ansi)
+    apply_qterminal(home, N, mode, ansi, uid, gid)
+    neu_polybar(C("polybar/config.ini"), N, mode, uid, gid)
+    neu_rofi(C("rofi/config.rasi"), N, uid, gid)
+    neu_rofi(C("rofi/pinned.rasi"), N, uid, gid)
+    neu_dunst(C("dunst/dunstrc"), N, uid, gid)
+    neu_gtk_defines(C("gtk-3.0/gtk.css"), N, selfg, uid, gid)
+    apply_kitty(C("kitty/kitty.conf"), ui, txt, uid, gid)
+    apply_polybar(C("polybar/config.ini"), ui, uid, gid)
+    apply_polybar_focus(C("polybar/config.ini"), N, mode, ui, selfg, uid, gid)
+    apply_dunst(C("dunst/dunstrc"), ui, uid, gid)
+    apply_rofi(C("rofi/hemo-colors.rasi"), ui, txt, selfg, uid, gid)
+    apply_gtk(C("gtk-3.0/hemo-accent.css"), ui, uid, gid)
+    apply_i3(C("i3/config"), ui, N, uid, gid)
+    apply_firefox(home, mode, N, ui, selfg, uid, gid)
+    apply_flameshot(C("flameshot/flameshot.ini"), N, ui, uid, gid)
+    apply_btop(home, N, mode, ui, txt, uid, gid)
+    apply_qt(home, N, mode, ui, txt, selfg, uid, gid)
+    apply_starship(home, N, mode, txt, uid, gid)
+    apply_nvim(home, N, mode, ui, txt, selfg, uid, gid)
+    apply_gimp(home, N, mode, ui, selfg, uid, gid)
+    apply_cherrytree(home, N, mode, ui, txt, selfg, uid, gid)
+    apply_fastfetch(home, txt, uid, gid)
+    apply_tmux(home, N, ui, selfg, uid, gid)
+
+
+# ---------------------------------------------------------------- more apps
+def _chown_all(uid, gid, *paths):
+    if uid is None:
+        return
+    for f in paths:
+        try:
+            os.chown(f, uid, gid)
+        except OSError:
+            pass
+
+
+def apply_flameshot(path, N, ui, uid, gid):
+    """Flameshot's capture UI (buttons, selection frame) in the accent. The
+    annotation drawColor is the user's pick and stays. Flameshot watches its
+    config, so a running daemon picks this up without a restart.
+    Also ensures useX11LegacyScreenshot=true: Flameshot 14 otherwise captures via
+    xdg-desktop-portal, which i3 lacks ("Screenshot portal timed out")."""
+    def fn(t):
+        if not re.search(r"(?m)^useX11LegacyScreenshot\s*=", t):
+            t = re.sub(r"(?m)^\[General\]\s*$", "[General]\nuseX11LegacyScreenshot=true", t, count=1)
+        t = re.sub(r"(?m)^(useX11LegacyScreenshot\s*=).*$", r"\g<1>true", t)
+        return _sub_keys(t, [
+            (r"(?m)^(uiColor=)#[0-9a-fA-F]{6}", ui),
+            (r"(?m)^(contrastUiColor=)#[0-9a-fA-F]{6}", N["bar"]),
+        ])
+    edit_file(path, fn, uid, gid)
+
+
+def apply_btop(home, N, mode, ui, txt, uid, gid):
+    """~/.config/btop/themes/hemo.theme from the mode neutrals + accent, selected
+    in btop.conf. Gauges run ok -> warn -> bad; boxes/titles wear the accent."""
+    ok, warn, bad = N["ok"], N["warn"], N["bad"]
+    soft = lambda h: _mix(h, N["win"], 0.45)       # dim start of a gradient
+    th = {
+        "main_bg": N["win"], "main_fg": N["text"], "title": N["text"],
+        "hi_fg": txt, "selected_bg": N["panel"], "selected_fg": txt,
+        "inactive_fg": N["muted"], "graph_text": N["muted"], "proc_misc": ok,
+        "cpu_box": ui, "mem_box": ui, "net_box": ui, "proc_box": ui,
+        "div_line": N["border"],
+        "temp_start": ok, "temp_mid": warn, "temp_end": bad,
+        "cpu_start": ok, "cpu_mid": warn, "cpu_end": bad,
+        "free_start": soft(ok), "free_mid": "", "free_end": ok,
+        "cached_start": soft(ui), "cached_mid": "", "cached_end": ui,
+        "available_start": soft(warn), "available_mid": "", "available_end": warn,
+        "used_start": soft(bad), "used_mid": "", "used_end": bad,
+        "download_start": soft(ui), "download_mid": "", "download_end": ui,
+        "upload_start": soft(ok), "upload_mid": "", "upload_end": ok,
+    }
+    d = os.path.join(home, ".config", "btop", "themes")
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, "hemo.theme")
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write("# generated by hemo-role-apply — do not edit; set via `hemo-theme <role>`\n")
+        fh.write("".join(f'theme[{k}]="{v}"\n' for k, v in th.items()))
+    conf = os.path.join(home, ".config", "btop", "btop.conf")
+    if os.path.exists(conf):
+        def fn(t):
+            if re.search(r"(?m)^color_theme\s*=", t):
+                return re.sub(r"(?m)^color_theme\s*=.*$", 'color_theme = "hemo"', t)
+            return 'color_theme = "hemo"\n' + t
+        edit_file(conf, fn, uid, gid)
+    else:   # btop fills in every other key on its first run
+        with open(conf, "w", encoding="utf-8") as fh:
+            fh.write('color_theme = "hemo"\ntheme_background = True\n')
+    _chown_all(uid, gid, os.path.dirname(d), d, f, conf)
+
+
+def apply_qt(home, N, mode, ui, txt, selfg, uid, gid):
+    """Qt6 apps (Wireshark, QTerminal, Flameshot's UI) via a qt6ct color scheme.
+    The session's QT_QPA_PLATFORMTHEME=qt5ct also loads qt6ct for Qt6 apps.
+    Apps read the palette at start, so open ones need a restart."""
+    hi, lo = "#ffffff", "#000000"     # Light/Midlight lighter, Dark darker, any mode
+    a = lambda h: "#ff" + h.lstrip("#").lower()
+    # QPalette role order (21): WindowText Button Light Midlight Dark Mid Text
+    # BrightText ButtonText Base Window Shadow Highlight HighlightedText Link
+    # LinkVisited AlternateBase NoRole ToolTipBase ToolTipText PlaceholderText
+    def row(fg):
+        return [fg, N["panel"], _mix(N["panel"], hi, 0.15), _mix(N["panel"], hi, 0.07),
+                _mix(N["panel"], lo, 0.40), N["border"], fg, "#ffffff", fg,
+                N["bar"], N["win"], lo, ui, selfg, txt, _mix(txt, N["muted"], 0.5),
+                N["panel"], N["win"], N["panel"], N["text"], N["muted"]]
+    active, disabled = row(N["text"]), row(N["muted"])
+    body = ("[ColorScheme]\n"
+            f"active_colors={', '.join(map(a, active))}\n"
+            f"disabled_colors={', '.join(map(a, disabled))}\n"
+            f"inactive_colors={', '.join(map(a, active))}\n")
+    d = os.path.join(home, ".config", "qt6ct", "colors")
+    os.makedirs(d, exist_ok=True)
+    scheme = os.path.join(d, "Hemo.conf")
+    with open(scheme, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    conf = os.path.join(home, ".config", "qt6ct", "qt6ct.conf")
+    def fn(t):
+        if not re.search(r"(?m)^\[Appearance\]", t):
+            t = "[Appearance]\n" + t
+        for k, v in (("custom_palette", "true"), ("color_scheme_path", scheme)):
+            if re.search(rf"(?m)^{k}=", t):
+                t = re.sub(rf"(?m)^{k}=.*$", f"{k}={v}", t)
+            else:
+                t = re.sub(r"(?m)^(\[Appearance\]\s*)$", rf"\g<1>\n{k}={v}", t, count=1)
+        return t
+    if not os.path.exists(conf):
+        open(conf, "w").close()
+    edit_file(conf, fn, uid, gid)
+    _chown_all(uid, gid, os.path.dirname(d), d, scheme, conf)
+
+
+def apply_starship(home, N, mode, txt, uid, gid):
+    """Prompt colors: a [palettes.hemo] table the Hemo presets reference by name
+    (accent, ok, bad, muted). Cached in ~/.config/hemo/starship-palette.toml so
+    hemo-appearance can re-attach it when the prompt preset changes. In report
+    mode the live prompt is the team standard's, so only the personal backup is
+    themed."""
+    block = ("[palettes.hemo]\n"
+             f'accent = "{txt}"\n'
+             f'ok = "{shade(N["ok"], N["win"], mode, 4.5)}"\n'
+             f'bad = "{shade(N["bad"], N["win"], mode, 4.5)}"\n'
+             f'warn = "{N["warn"]}"\n'
+             f'muted = "{N["muted"]}"\n'
+             f'text = "{N["text"]}"')
+    cache = os.path.join(home, ".config", "hemo", "starship-palette.toml")
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    with open(cache, "w", encoding="utf-8") as fh:
+        fh.write(block + "\n")
+    _chown_all(uid, gid, cache)
+    report = os.path.exists(os.path.join(home, ".config", "hemo", "report.active"))
+    live = os.path.join(home, ".config", "hemo", "report-backup", "starship.toml") if report \
+        else os.path.join(home, ".config", "starship.toml")
+    def fn(t):
+        if not re.search(r'(?m)^palette\s*=', t):
+            # top-level key: must sit before the first [table]
+            m = re.search(r"(?m)^\[[A-Za-z0-9_.-]+\]\s*$", t)
+            i = m.start() if m else len(t)
+            t = t[:i] + 'palette = "hemo"\n\n' + t[i:]
+        return replace_block(t, "starship", block)
+    edit_file(live, fn, uid, gid)
+
+
+def apply_fastfetch(home, txt, uid, gid):
+    """fastfetch: the Hemo lizard logo and the info keys in the accent (text
+    shade, legible on the terminal background). Only the two color values are
+    rewritten, so the rest of the user's config.jsonc is left alone."""
+    f = os.path.join(home, ".config", "fastfetch", "config.jsonc")
+    if os.path.exists(f):
+        edit_file(f, lambda t: _sub_keys(t, [
+            (r'("1"\s*:\s*")#[0-9a-fA-F]{6}', txt),
+            (r'("keys"\s*:\s*")#[0-9a-fA-F]{6}', txt),
+        ]), uid, gid)
+
+def apply_tmux(home, N, ui, selfg, uid, gid):
+    """tmux status bar themed to the role: a generated hemo-colors.conf that
+    tmux.conf sources, so the bar/panes follow accent + mode like the others.
+    Only written if the user has a tmux config dir (skel ships one)."""
+    d = os.path.join(home, ".config", "tmux")
+    if not os.path.isdir(d):
+        return
+    block = "\n".join([
+        "# generated by hemo-role-apply — sourced by tmux.conf. Do not edit.",
+        f'set -g status-style "bg={N["bar"]},fg={N["text"]}"',
+        f'set -g status-left-style "bg={N["panel"]},fg={N["text"]},bold"',
+        f'set -g window-status-style "fg={N["muted"]}"',
+        f'set -g window-status-current-style "bg={ui},fg={selfg},bold"',
+        f'set -g pane-border-style "fg={N["border"]}"',
+        f'set -g pane-active-border-style "fg={ui}"',
+        f'set -g message-style "bg={N["panel"]},fg={N["text"]}"',
+        f'set -g mode-style "bg={ui},fg={selfg}"',
+        f'set -g clock-mode-colour "{ui}"',
+        "",
+    ])
+    f = os.path.join(d, "hemo-colors.conf")
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write(block)
+    _chown_all(uid, gid, f)
+    # a running tmux picks it up on next start or `prefix + r`; no live reload
+    # here, matching the other non-desktop writers.
+
+def apply_nvim(home, N, mode, ui, txt, selfg, uid, gid):
+    """LazyVim: recolor tokyonight's UI (backgrounds, gutter, borders, statusline,
+    selection) from the neutrals + accent. Syntax colors stay tokyonight's own
+    (moon / day per base mode) so code stays readable under any accent or pywal.
+    Only written when a LazyVim config exists; Neovim reads it at start."""
+    nv = os.path.join(home, ".config", "nvim")
+    if not os.path.exists(os.path.join(nv, "lua", "config", "lazy.lua")):
+        return
+    light = base(mode) == "light"
+    w, bar, pan = N["win"], N["bar"], N["panel"]
+    H = {
+        "bg": w, "bg_dark": bar, "bg_dark1": N["desk"], "bg_highlight": pan,
+        "bg_popup": bar, "bg_statusline": bar, "bg_sidebar": bar, "bg_float": bar,
+        "bg_visual": _mix(ui, w, 0.70), "bg_search": _mix(ui, w, 0.45),
+        "fg": N["text"], "fg_dark": _mix(N["text"], N["muted"], 0.5),
+        "fg_float": N["text"], "fg_sidebar": _mix(N["text"], N["muted"], 0.5),
+        "fg_gutter": _mix(N["border"], N["muted"], 0.35), "comment": _mix(N["muted"], w, 0.20),
+        "dark3": _mix(N["muted"], w, 0.35), "dark5": N["muted"],
+        "border": N["border"], "border_highlight": ui,
+        "black": N["desk"], "terminal_black": N["border"],
+    }
+    A = {"ui": ui, "txt": txt, "on": selfg, "bar": bar, "panel": pan,
+         "text": N["text"], "border": N["border"],
+         "ok": shade(N["ok"], bar, mode, 3.0), "warn": shade(N["warn"], bar, mode, 3.0),
+         "bad": shade(N["bad"], bar, mode, 3.0)}
+    lua = lambda d: "{\n" + "".join(f'  {k} = "{v}",\n' for k, v in d.items()) + "}"
+    body = f"""-- generated by hemo-role-apply — do not edit; set via `hemo-theme <role>`
+local H = {lua(H)}
+local A = {lua(A)}
+
+local function mode(fill)
+  return {{
+    a = {{ bg = fill, fg = A.bar, gui = "bold" }},
+    b = {{ bg = A.panel, fg = fill }},
+    c = {{ bg = A.bar, fg = A.text }},
+  }}
+end
+
+return {{
+  {{
+    "folke/tokyonight.nvim",
+    opts = {{
+      style = "{'day' if light else 'moon'}",
+      light_style = "day",
+      on_colors = function(c)
+        for k, v in pairs(H) do c[k] = v end
+      end,
+      on_highlights = function(hl, c)
+        hl.CursorLineNr = {{ fg = A.txt, bold = true }}
+        hl.FloatBorder = {{ fg = A.ui, bg = H.bg_float }}
+        hl.FloatTitle = {{ fg = A.txt, bg = H.bg_float, bold = true }}
+        hl.WinSeparator = {{ fg = A.border, bold = true }}
+        hl.Title = {{ fg = A.txt, bold = true }}
+        hl.MatchParen = {{ fg = A.txt, bold = true }}
+        hl.IncSearch = {{ bg = A.ui, fg = A.on }}
+        hl.CurSearch = hl.IncSearch
+        hl.PmenuSel = {{ bg = H.bg_visual, bold = true }}
+        hl.TabLineSel = {{ bg = A.ui, fg = A.on }}
+        hl.BufferLineIndicatorSelected = {{ fg = A.ui }}
+        hl.SnacksDashboardHeader = {{ fg = A.txt }}
+        hl.SnacksDashboardIcon = {{ fg = A.txt }}
+        hl.SnacksDashboardKey = {{ fg = A.txt }}
+        hl.NoiceCmdlinePopupBorder = {{ fg = A.ui }}
+        hl.NoiceCmdlineIcon = {{ fg = A.txt }}
+        hl.WhichKeyGroup = {{ fg = A.txt }}
+      end,
+    }},
+  }},
+  {{
+    "nvim-lualine/lualine.nvim",
+    opts = function(_, opts)
+      local fill = A.ui
+      local t = {{
+        normal = mode(fill), insert = mode(A.ok), visual = mode(A.warn),
+        replace = mode(A.bad), command = mode(A.txt), terminal = mode(A.ok),
+        inactive = {{ a = {{ bg = A.bar, fg = H.dark5 }}, b = {{ bg = A.bar, fg = H.dark5 }},
+                     c = {{ bg = A.bar, fg = H.dark5 }} }},
+      }}
+      t.normal.a.fg = A.on
+      opts.options = opts.options or {{}}
+      opts.options.theme = t
+    end,
+  }},
+}}
+"""
+    f = os.path.join(nv, "lua", "plugins", "hemo-theme.lua")
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    _chown_all(uid, gid, f)
+
+
+def _gimp_dirs(home):
+    """GIMP 3 profile dirs (~/.config/GIMP/3.x). None yet (GIMP never run): make
+    the one for the installed version, so the first launch is already themed."""
+    root = os.path.join(home, ".config", "GIMP")
+    dirs = sorted(glob.glob(os.path.join(root, "3.*")))
+    if dirs:
+        return dirs
+    try:
+        v = subprocess.run(["dpkg-query", "-W", "-f", "${Version}", "gimp"],
+                           capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    m = re.match(r"(3\.\d+)", v)
+    return [os.path.join(root, m.group(1))] if m else []
+
+
+def apply_gimp(home, N, mode, ui, selfg, uid, gid):
+    """GIMP 3 brings its own theme and ignores gtk.css. Its theme.css imports the
+    user's gimp.css last, so redefining the theme's named colors there recolors
+    every widget; the Dark/Light scheme (icons, handles) follows the base mode.
+    GIMP reads both at start, so an open GIMP needs a restart."""
+    light = base(mode) == "light"
+    rgba = lambda h, a: "rgba(%d,%d,%d,%s)" % (*_rgb(h), a)
+    edge = _mix(N["border"], N["text"], 0.15) if light else N["desk"]
+    c = {
+        "fg-color": N["text"], "bg-color": N["win"], "border-color": edge,
+        "dimmed-fg-color": N["muted"],
+        "disabled-fg-color": _mix(N["muted"], N["win"], 0.25),
+        "disabled-button-color": _mix(N["muted"], N["win"], 0.55),
+        "hover-color": _mix(ui, N["win"], 0.75 if light else 0.6),
+        "widget-bg-color": N["bar"],
+        "selected-color": _mix(ui, N["win"], 0.7 if light else 0.5),
+        "extreme-bg-color": _mix(N["win"], "#ffffff", 0.5) if light else N["desk"],
+        "extreme-selected-color": N["border"] if light else N["panel"],
+        "strong-border-color": N["border"] if light else N["bar"],
+        "stronger-border-color": edge if light else N["border"],
+        "edge-border-color": edge,
+        "scrollbar-slider-color": N["muted"], "scrollbar-trough-color": N["win"],
+        "ruler-color": rgba(N["bar"], 0.3),
+    }
+    body = "".join(f"@define-color {k:<23}{v};\n" for k, v in c.items()) + f"""
+selection, *:selected {{ background-color: {ui}; color: {selfg}; }}
+check:checked, radio:checked {{ background-color: {ui}; border-color: {ui}; color: {selfg}; }}
+scale highlight, progressbar trough progress {{ background-color: {ui}; }}
+"""
+    scheme = "light" if light else "dark"
+    for d in _gimp_dirs(home):
+        new = not os.path.isdir(d)
+        os.makedirs(d, exist_ok=True)
+        write_generated(os.path.join(d, "gimp.css"), body, uid, gid)
+        rc = os.path.join(d, "gimprc")
+        if not os.path.exists(rc):
+            open(rc, "w").close()
+        def fn(t):
+            line = f"(theme-color-scheme {scheme})"
+            if re.search(r"(?m)^\(theme-color-scheme\s", t):
+                return re.sub(r"(?m)^\(theme-color-scheme\s[^)]*\)", line, t)
+            return t + ("" if t.endswith("\n") or not t else "\n") + line + "\n"
+        edit_file(rc, fn, uid, gid)
+        _chown_all(uid, gid, rc, *((os.path.dirname(d), d) if new else ()))
+
+
+def _ini_set(t, section, key, val):
+    """Set key=val inside [section] of a GLib keyfile, adding either as needed."""
+    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", t)
+    if not sec:
+        return t + ("" if t.endswith("\n") or not t else "\n") + f"[{section}]\n{key}={val}\n"
+    nxt = re.search(r"(?m)^\[", t[sec.end():])
+    end = sec.end() + nxt.start() if nxt else len(t)
+    body = t[sec.end():end]
+    pat = rf"(?m)^{re.escape(key)}=.*$"
+    if re.search(pat, body):
+        body = re.sub(pat, lambda _m: f"{key}={val}", body)
+    else:
+        body = f"\n{key}={val}" + body
+    return t[:sec.end()] + body + t[end:]
+
+
+def apply_cherrytree(home, N, mode, ui, txt, selfg, uid, gid):
+    """Cherrytree: its widgets already follow gtk.css; the text panes, tree and
+    links have their own colors. A generated GtkSourceView scheme `hemo` (UI
+    styles only; syntax colors inherit Kali-Dark/Kali-Light for readability, as
+    with apply_nvim) drives all four editors, and config.cfg gets the tree +
+    link + monospace colors. Cherrytree rewrites config.cfg on exit, so close
+    it before a theme change or the old colors come back."""
+    light = base(mode) == "light"
+    parent = "Kali-Light" if light else "Kali-Dark"
+    if not glob.glob(f"/usr/share/gtksourceview-4/styles/{parent}.xml"):
+        parent = "classic" if light else "oblivion"
+    cur = _mix(N["panel"], ui, 0.12)
+    sel = _mix(ui, N["win"], 0.55 if light else 0.4)
+    scheme = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!-- generated by hemo-role-apply — do not edit; set via `hemo-theme <role>` -->
+<style-scheme id="hemo" name="Hemo" version="1.0" parent-scheme="{parent}">
+  <author>Hemo OS</author>
+  <description>Hemo neutrals + role accent over {parent}'s syntax colors</description>
+  <style name="text"                foreground="{N['text']}" background="{N['win']}"/>
+  <style name="selection"           foreground="{N['text']}" background="{sel}"/>
+  <style name="selection-unfocused" foreground="{N['text']}" background="{N['border']}"/>
+  <style name="cursor"              foreground="{ui}"/>
+  <style name="current-line"        background="{cur}"/>
+  <style name="current-line-number" foreground="{txt}" background="{cur}"/>
+  <style name="line-numbers"        foreground="{N['muted']}" background="{N['bar']}"/>
+  <style name="right-margin"        foreground="{N['border']}" background="{N['panel']}"/>
+  <style name="draw-spaces"         foreground="{N['border']}"/>
+  <style name="background-pattern"  background="{N['bar']}"/>
+  <style name="bracket-match"       foreground="{selfg}" background="{ui}" bold="true"/>
+  <style name="search-match"        foreground="{selfg}" background="{ui}"/>
+</style-scheme>
+"""
+    sd = os.path.join(home, ".local", "share", "gtksourceview-4", "styles")
+    os.makedirs(sd, exist_ok=True)
+    sf = os.path.join(sd, "hemo.xml")
+    with open(sf, "w", encoding="utf-8") as fh:
+        fh.write(scheme)
+    cd = os.path.join(home, ".config", "cherrytree")
+    os.makedirs(cd, exist_ok=True)
+    conf = os.path.join(cd, "config.cfg")
+    if not os.path.exists(conf):
+        open(conf, "w").close()
+    sets = [("editor", k, "hemo") for k in
+            ("rt_style_scheme", "pt_style_scheme", "ta_style_scheme", "co_style_scheme")]
+    sets += [("colors", k, v) for k, v in (
+        ("tt_def_fg", N["text"]), ("tt_def_bg", N["bar"]),
+        ("tt_sel_fg", selfg), ("tt_sel_bg", ui),
+        ("monospace_fg", txt), ("monospace_bg", N["panel"]),
+        ("col_link_webs", txt), ("col_link_node", N["ok"]),
+        ("col_link_file", N["warn"]), ("col_link_fold", N["muted"]))]
+    def fn(t):
+        for s, k, v in sets:
+            t = _ini_set(t, s, k, v)
+        return t
+    edit_file(conf, fn, uid, gid)
+    # a leftover config.cfg.tmp (Cherrytree killed mid-save) is restored over
+    # config.cfg at next start, so it gets the same edits
+    if os.path.exists(conf + ".tmp"):
+        edit_file(conf + ".tmp", fn, uid, gid)
+    _chown_all(uid, gid, *[os.path.join(home, ".local", "share", p) for p in
+                           ("gtksourceview-4", "gtksourceview-4/styles")], sf, cd, conf)
+
+
+def apply_color(home, raw, mode, pal, uid, gid, user):
+    """Write every neutral (per MODE) and the shaded accent across the configs.
+    `raw` is the role/custom accent before shading. Returns the stored accent (raw)."""
+    N = neutrals(mode, pal)
+    win = N["win"]
+    ui = shade(raw, win, mode, 3.0)     # borders / fills / bar (>=3:1)
+    txt = shade(raw, win, mode, 4.5)    # accent-colored text / links (>=4.5:1)
+    selfg = on_accent(ui, N["text"])    # text ON an accent fill (white or body text)
+    # remember the raw accent in a USER-writable file so a later mode switch (run
+    # as root) can re-shade it, and the custom Appearance color survives.
+    _write_user_accent(home, raw, uid, gid)
+    _write_all(home, N, None, mode, ui, txt, selfg, uid, gid)   # None: neu_kitty picks the scheme
+    refresh_net_icons(home, user)
+    log(f"color: accent {raw} -> ui {ui} / text {txt}  (mode {mode})")
+    return raw
+
+
+def refresh_net_icons(home, user):
+    """Re-render the Hemo-Net tray glyphs (nm-applet) in the accent just written to
+    gtk-3.0/hemo-accent.css. Without this the network icon kept the old accent after
+    a custom color, a mode switch or pywal — only a role switch re-rendered it."""
+    if user and os.path.isdir(os.path.join(home, ".local/share/icons/Hemo-Net")):
+        _run_as_user(user, ["hemo-net-icons"])
+
+
+def _wal_regen(home, user, uid, light):
+    """Re-run wal on the image it last used, in light (-l) or dark polarity, so a
+    mode switch under pywal gets a scheme of the right polarity. False if it can't."""
+    img = ""
+    try:
+        with open(os.path.join(home, ".cache", "wal", "wal")) as fh:
+            img = fh.read().strip()
+    except OSError:
+        pass
+    img = img if os.path.isfile(img) else _read_user_wallpaper(home)
+    wal = shutil.which("wal") or "/usr/local/bin/wal"
+    if not img or not os.path.isfile(img) or not os.path.exists(wal):
+        return False
+    # -n: don't set the wallpaper; -s/-t/-e: don't touch terminals/reload (Hemo applies)
+    cmd = [wal, "-i", img, *(["-l"] if light else []), "-n", "-s", "-t", "-e", "-q"]
+    if os.geteuid() != uid:
+        cmd = ["runuser", "-u", user, "--", *cmd]
+    try:
+        return subprocess.call(cmd, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=120) == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def apply_pywal(home, mode, uid, gid, user):
+    """Override Hemo's theme with a wallpaper-derived scheme from pywal's cache
+    (~/.cache/wal/colors.json). No contrast guarantees — that is the opt-in cost.
+    The mode still counts: a light/dark flip re-derives wal in that polarity, and
+    kali/black keep their own surfaces while hues/accent follow the wallpaper."""
+    cache = os.path.join(home, ".cache", "wal", "colors.json")
+    def load():
+        try:
+            with open(cache) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+    w = load()
+    if w is None:
+        log("pywal cache missing — run: hemo-pywal on")
+        return False
+    cached_light = _lum(w.get("special", {}).get("background", "#000000")) > 0.4
+    if cached_light != (base(mode) == "light"):
+        if _wal_regen(home, user, uid, base(mode) == "light"):
+            w = load() or w
+        else:
+            log("pywal: could not re-derive for this mode — using the cached scheme")
+    sp = w.get("special", {})
+    cols = w.get("colors", {})
+    c = [cols.get(f"color{i}", "#000000") for i in range(16)]
+    bg = sp.get("background", c[0])
+    fg = sp.get("foreground", c[15])
+    def lighten(h, p):   # blend toward white/black to synthesise missing shades
+        return _mix(h, "#ffffff" if base(mode) == "dark" else "#000000", p)
+    N = {
+        "desk":   lighten(bg, 0.04) if base(mode) == "light" else _mix(bg, "#000000", 0.25),
+        "bar":    bg,
+        "win":    bg,
+        "panel":  c[0] if c[0].lower() != bg.lower() else lighten(bg, 0.10),
+        "border": c[8],
+        "text":   fg,
+        "muted":  _mix(fg, bg, 0.45),
+        "ok": c[2], "warn": c[3], "bad": c[1],
+    }
+    if mode in ("kali", "black"):   # the mode's own surfaces; the wallpaper keeps the hues
+        M = neutrals(mode, load_palette())
+        N.update({k: M[k] for k in ("desk", "bar", "win", "panel", "border", "text", "muted")})
+    # accent = the most-saturated of the pywal hues (reads as "the" accent)
+    def sat(h):
+        r, g, b = [x / 255 for x in _rgb(h)]
+        mx, mn = max(r, g, b), min(r, g, b)
+        return 0 if mx == 0 else (mx - mn) / mx
+    accent = max(c[1:7], key=sat)
+    ui = shade(accent, N["win"], mode, 3.0)
+    txt = shade(accent, N["win"], mode, 4.5)
+    selfg = on_accent(ui, N["text"])
+    ansi = {i: c[i] for i in range(16)}
+    _write_all(home, N, ansi, mode, ui, txt, selfg, uid, gid)
+    refresh_net_icons(home, user)
+    log(f"pywal: wallpaper scheme applied (accent {accent})")
+    return True
+
+
+def _user_accent_path(home):
+    return os.path.join(home, ".config", "hemo", "accent")
+
+
+def _write_user_accent(home, raw, uid, gid):
+    p = _user_accent_path(home)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as fh:
+            fh.write(raw.strip() + "\n")
+        if uid is not None:
+            os.chown(p, uid, gid)
+            os.chown(os.path.dirname(p), uid, gid)
+    except OSError:
+        pass
+
+
+def _read_user_accent(home):
+    try:
+        with open(_user_accent_path(home)) as fh:
+            v = fh.read().strip()
+        return v if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else ""
+    except OSError:
+        return ""
+
+
+def _user_mode(home):
+    """Rootless mode preference (~/.config/hemo/mode): dark|light|kali|black."""
+    try:
+        with open(os.path.join(home, ".config", "hemo", "mode")) as fh:
+            v = fh.read().strip().lower()
+        return v if v in MODES else ""
+    except OSError:
+        return ""
+
+
+def _write_user_mode(home, mode, uid, gid):
+    p = os.path.join(home, ".config", "hemo", "mode")
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as fh:
+            fh.write(mode + "\n")
+        if uid is not None:
+            os.chown(p, uid, gid)
+    except OSError:
+        pass
+
+
+def reload_desktop(user):
+    for cmd in (["i3-msg", "reload"], ["i3-msg", "restart"]):
+        _run_as_user(user, cmd)
+    # bar, terminals and notifications re-read their configs (neutrals/accent).
+    # i3 relaunches the bar so it inherits the session env, not this caller's; a
+    # bar parented to a terminal/tool shell launched its click actions (power menu)
+    # from there.
+    _run_as_user(user, ["i3-msg", "-q",
+        'exec --no-startup-id "killall -q polybar; sleep 0.4; exec polybar main"'])
+    _run_as_user(user, ["sh", "-c",
+        "pkill -USR1 kitty 2>/dev/null; dunstctl reload 2>/dev/null; true"])
+
+
+# ---------------------------------------------------------------- main
+def main(argv):
+    # internal: the sudo re-entry for the system policy file only
+    if len(argv) >= 3 and argv[1] == "--bookmarks-only":
+        apply_bookmarks([f for f in argv[2].split(",") if f])
+        return
+
+    pal = load_palette()
+
+    # print-only: kitty color lines for an explicit look, to stdout. Writes nothing,
+    # touches no live config — hemo-shotterm layers it over kitty.conf (`-c`) so the
+    # screenshot terminal matches the report standard whatever the daily theme is.
+    #   --kitty-print MODE ACCENT [TERMCOLORS] [TERMFG]
+    if len(argv) >= 4 and argv[1] == "--kitty-print":
+        mode, raw = norm_mode(argv[2]), argv[3].strip()
+        scheme = argv[4].strip().lower() if len(argv) >= 5 else "auto"
+        tfg = argv[5].strip() if len(argv) >= 6 else "default"
+        if mode not in MODES or not re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+            log("usage: hemo-role-apply --kitty-print MODE #rrggbb [TERMCOLORS] [TERMFG]")
+            sys.exit(1)
+        N = neutrals(mode, pal)
+        s = _SCHEMES.get(scheme)
+        ansi = (s.get(base(mode)) or s["dark"]) if s else _ANSI[mode]
+        fg = tfg if re.fullmatch(r"#[0-9a-fA-F]{6}", tfg) else N["text"]
+        out = [("background", N["win"]), ("foreground", fg),
+               ("selection_background", N["border"]), ("selection_foreground", N["text"]),
+               ("cursor", shade(raw, N["win"], mode, 3.0)), ("cursor_text_color", N["win"]),
+               ("url_color", shade(raw, N["win"], mode, 4.5))]
+        out += [(f"color{i}", ansi[i]) for i in range(16)]
+        print("\n".join(f"{k} {v}" for k, v in out))
+        return
+
+    # Rewrite BOTH qtermwidget color schemes (Hemo + HemoShot) using the current
+    # live theme (Hemo) and the report standard (HemoShot). Root-only — the
+    # system dir /usr/share/qtermwidget*/color-schemes is the only place
+    # qtermwidget >=2.4 reads from. Used by provision and by hemo-report when
+    # the report standard changes. Takes no args.
+    if len(argv) >= 2 and argv[1] == "--qterminal-schemes":
+        if os.geteuid() != 0:
+            log("--qterminal-schemes must run as root")
+            sys.exit(1)
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        mode = current_mode(pal, home)
+        N = neutrals(mode, pal)
+        apply_qterminal(home, N, mode, None, uid, gid, pal=pal)
+        log(f"qterminal schemes rewritten (user {user}, mode {mode})")
+        return
+
+    # Same palette as --kitty-print, emitted as a qtermwidget .colorscheme, so a
+    # qterminal can be locked to the report standard the same way kitty is.
+    #   --qterminal-print MODE ACCENT [TERMCOLORS] [TERMFG]
+    if len(argv) >= 4 and argv[1] == "--qterminal-print":
+        mode, raw = norm_mode(argv[2]), argv[3].strip()
+        scheme = argv[4].strip().lower() if len(argv) >= 5 else "auto"
+        tfg = argv[5].strip() if len(argv) >= 6 else "default"
+        if mode not in MODES or not re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+            log("usage: hemo-role-apply --qterminal-print MODE #rrggbb [TERMCOLORS] [TERMFG]")
+            sys.exit(1)
+        N = neutrals(mode, pal)
+        s = _SCHEMES.get(scheme)
+        ansi = (s.get(base(mode)) or s["dark"]) if s else _ANSI[mode]
+        fg = tfg if re.fullmatch(r"#[0-9a-fA-F]{6}", tfg) else N["text"]
+        print(qterminal_scheme(N, fg, ansi), end="")
+        return
+
+    # appearance override: re-tint the accent to ANY hex (custom color from the
+    # Appearance panel), keeping role / icons / wallpaper / bookmarks. The hex is
+    # the RAW accent; it is shaded per the current mode. User-owned files only.
+    if len(argv) >= 3 and argv[1] == "--accent":
+        hexv = argv[2].strip()
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", hexv):
+            log(f"bad accent '{hexv}' (want #rrggbb)")
+            sys.exit(1)
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        mode = current_mode(pal, home)
+        # user-owned files + the user accent store only — NO /var/lib/hemo write,
+        # so this works without root (the Appearance panel calls it as the user).
+        apply_color(home, hexv, mode, pal, uid, gid, user)
+        log(f"accent -> {hexv} (user {user}, mode {mode})")
+        reload_desktop(user)
+        return
+
+    # mode switch (dark/light/kali/black). Re-applies neutrals + the current accent (shaded
+    # for the new mode); keeps role / wallpaper / bookmarks / icons.
+    if len(argv) >= 3 and argv[1] == "--mode":
+        want = argv[2].strip().lower()
+        if want not in MODES:
+            log("usage: hemo-role-apply --mode " + "|".join(MODES))
+            sys.exit(1)
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        prev = _read_theme_env()
+        # prefer the user's custom accent (set via Appearance) over the recorded one
+        raw = _read_user_accent(home) or prev.get("HEMO_ACCENT") or neutrals(want, pal)["accent"]
+        # rootless: store the mode in the user file (so a hotkey/Appearance toggle
+        # needs no pkexec), then apply.
+        _write_user_mode(home, want, uid, gid)
+        # if pywal has taken over, the scheme comes from the wallpaper, not Saddle
+        if os.path.exists(os.path.join(home, ".config/hemo/pywal")):
+            apply_pywal(home, want, uid, gid, user)
+        else:
+            apply_color(home, raw, want, pal, uid, gid, user)
+        # re-pad the wallpaper so its margin matches the new mode's desk color
+        # (the user's own pick from Appearance wins over the role's)
+        wall = _read_user_wallpaper(home) or prev.get("HEMO_WALLPAPER", "")
+        if wall:
+            apply_wallpaper(home, wall, neutrals(want, pal)["desk"], user, uid, gid)
+        log(f"mode -> {want} (user {user})")
+        reload_desktop(user)
+        return
+
+    # wallpaper only (Appearance > Wallpaper): any image path. Hemo art gets the
+    # same zoomed-out framing as role wallpapers; other images fill the screen.
+    # feh writes ~/.fehbg so it sticks across logins. Rootless.
+    if len(argv) >= 3 and argv[1] == "--wallpaper":
+        path = os.path.abspath(os.path.expanduser(argv[2]))
+        if not os.path.isfile(path):
+            log(f"no such image: {path}")
+            sys.exit(1)
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        mode = current_mode(pal, home)
+        apply_wallpaper(home, path, neutrals(mode, pal)["desk"], user, uid, gid)
+        log(f"wallpaper -> {path}")
+        return
+
+    # terminal-only refresh (hemo-appearance's Terminal colors): rewrite kitty's
+    # neutrals + 16 colors for the current mode/scheme and reload kitty. Rootless.
+    if len(argv) >= 2 and argv[1] == "--kitty":
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        if os.path.exists(os.path.join(home, ".config/hemo/pywal")):
+            log("pywal is on — it owns the terminal colors; leaving them")
+            return
+        mode = current_mode(pal, home)
+        neu_kitty(os.path.join(home, ".config", "kitty", "kitty.conf"), neutrals(mode, pal), mode, uid, gid)
+        _run_as_user(user, ["pkill", "-USR1", "kitty"])
+        log(f"terminal colors refreshed (mode {mode})")
+        return
+
+    # pywal: apply the wallpaper-derived scheme from pywal's cache (called by
+    # hemo-pywal after it runs `wal`). Overrides the Saddle theme. Rootless.
+    if len(argv) >= 2 and argv[1] == "--pywal":
+        user = target_user()
+        pw = pwd.getpwnam(user)
+        home, uid, gid = pw.pw_dir, pw.pw_uid, pw.pw_gid
+        mode = current_mode(pal, home)
+        if apply_pywal(home, mode, uid, gid, user):
+            reload_desktop(user)
+        return
+
+    theme_only = False
+    # which parts of the role profile to apply. Default = everything (first boot,
+    # and any caller that doesn't ask for less). `hemo-theme` / `hemo-roles` /
+    # the welcome pass a subset here so a later role switch keeps the parts the
+    # operator chose to keep (e.g. a custom Appearance color).
+    ALL_ASPECTS = ("color", "wallpaper", "bookmarks", "icons")
+    aspects = set(ALL_ASPECTS)
+    args = argv[1:]
+    while args and args[0].startswith("--"):
+        if args[0] == "--theme-only":
+            theme_only = True
+            args = args[1:]
+        elif args[0] == "--aspects":
+            if len(args) < 2:
+                log("--aspects needs a comma list (color,wallpaper,bookmarks,icons)")
+                sys.exit(1)
+            req = {a.strip() for a in args[1].split(",") if a.strip()}
+            req = {"color" if a == "accent" else a for a in req}  # accent -> color
+            bad = req - set(ALL_ASPECTS)
+            if bad:
+                log(f"unknown aspect(s): {', '.join(sorted(bad))}")
+                sys.exit(1)
+            aspects = req
+            args = args[2:]
+        else:
+            log(f"unknown flag: {args[0]}")
+            sys.exit(1)
+    if len(args) != 1:
+        sys.stderr.write(__doc__)
+        sys.exit(1)
+    role = args[0]
+    if not aspects:
+        log("no aspects selected — nothing to change")
+        return
+
+    roles = load_roles()
+    if role not in roles:
+        log(f"unknown role: {role}")
+        sys.exit(1)
+    prof = (roles[role].get("profile", {}) or {})
+    accent = prof.get("accent", "#c9a37a")
+    wallpaper = prof.get("wallpaper", "hemo-bg.png")
+    bookmarks = prof.get("bookmarks", []) or []
+    icons = prof.get("icons", "")
+
+    user = target_user()
+    pw = pwd.getpwnam(user)
+    home = pw.pw_dir
+    uid, gid = pw.pw_uid, pw.pw_gid
+
+    kept = [a for a in ALL_ASPECTS if a not in aspects]
+    log(f"primary role -> {role}  (accent {accent}, user {user})"
+        + (f"  [applying: {', '.join(sorted(aspects))}]" if kept else ""))
+    if kept:
+        log(f"keeping existing: {', '.join(kept)}")
+
+    mode = current_mode(pal, home)
+    if "color" in aspects:
+        apply_color(home, accent, mode, pal, uid, gid, user)
+    if "icons" in aspects:
+        apply_icon_theme(os.path.join(home, ".config/gtk-3.0/settings.ini"), icons, uid, gid, home, user)
+    if "wallpaper" in aspects:
+        apply_wallpaper(home, wallpaper, neutrals(mode, pal)["desk"], user, uid, gid)
+    if "bookmarks" in aspects:
+        apply_bookmarks(bookmarks)
+    # Record the role as primary regardless; the accent/wallpaper we store is what
+    # is actually live now — keep the prior values for aspects we didn't touch.
+    prev = _read_theme_env()
+    rec_accent = accent if "color" in aspects else prev.get("HEMO_ACCENT", accent)
+    rec_wall = wallpaper if "wallpaper" in aspects else prev.get("HEMO_WALLPAPER", wallpaper)
+    record_primary(role, rec_accent, rec_wall, mode)
+
+    # refresh a running session (no-op on first boot, before login)
+    reload_desktop(user)
+    log("done" + ("" if not theme_only else " (theme only)"))
+
+
+if __name__ == "__main__":
+    main(sys.argv)

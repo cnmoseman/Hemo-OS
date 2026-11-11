@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""hemo-net-icons — accent-colored Nerd-glyph network icons for nm-applet.
+
+Builds a per-user "Hemo-Net" icon theme that INHERITS the role's Flat-Remix
+variant (so every other icon still resolves) but overrides the handful of
+network-* icons nm-applet draws with the bar's own glyph set, rendered in the
+live accent color. Re-run on every theme/accent change (hemo-role-apply calls
+it) so the tray icon tracks the role.
+
+    hemo-net-icons            # regenerate from the current accent + base theme
+    hemo-net-icons --base X   # pin the inherited base theme to X (else kept)
+
+Sets gtk-icon-theme-name=Hemo-Net and restarts nm-applet so the change shows.
+"""
+import os
+import re
+import sys
+import subprocess
+
+HOME = os.path.expanduser("~")
+# Regular weight + this fill ratio make the tray glyph match the polybar icons,
+# which use font-1 (JetBrainsMono Nerd Font Mono, Regular) at %{T2}. The vendored
+# path is preferred; fall back to fontconfig so a missing download doesn't crash.
+FONT_CANDIDATES = [
+    "/usr/local/share/fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+    "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMonoNerdFontMono-Regular.ttf",
+]
+FILL = 0.95
+THEME = "Hemo-Net"
+THEME_DIR = os.path.join(HOME, ".local/share/icons", THEME)
+BASE_FILE = os.path.join(THEME_DIR, ".hemo-base")
+GTK3 = os.path.join(HOME, ".config/gtk-3.0/settings.ini")
+ACCENT_CSS = os.path.join(HOME, ".config/gtk-3.0/hemo-accent.css")
+SIZES = [16, 22, 24, 32, 48]
+
+# nerd glyphs (JetBrainsMono NF, md-*) — the ethernet one matches the bar's IP tile.
+G_WIRED = 0xF0200   # ethernet
+G_WIRED_OFF = 0xF0202   # ethernet off
+G_VPN = 0xF099D   # shield-check (VPN up / locked)
+G_WIFI = {"excellent": 0xF0928, "good": 0xF0925, "ok": 0xF0922,
+          "weak": 0xF091F, "none": 0xF092F}
+
+# icon name -> glyph. Both the -symbolic names modern nm-applet asks for and the
+# plain names older code paths use, so whichever it requests lands on our glyph.
+MAPPING = {
+    G_WIRED: ["network-wired", "network-wired-symbolic",
+              "network-wired-acquiring-symbolic", "nm-device-wired"],
+    G_WIRED_OFF: ["network-wired-disconnected-symbolic", "network-offline-symbolic",
+                  "network-error-symbolic", "network-no-route-symbolic",
+                  "network-wired-offline-symbolic", "network-offline"],
+    G_VPN: ["network-vpn", "network-vpn-symbolic", "network-vpn-acquiring-symbolic",
+            "nm-vpn-active-lock", "nm-vpn-standalone-lock"],
+    G_WIFI["excellent"]: ["network-wireless-signal-excellent-symbolic",
+                          "network-wireless-connected-symbolic",
+                          "network-wireless-symbolic", "network-wireless"],
+    G_WIFI["good"]: ["network-wireless-signal-good-symbolic"],
+    G_WIFI["ok"]: ["network-wireless-signal-ok-symbolic",
+                   "network-wireless-acquiring-symbolic"],
+    G_WIFI["weak"]: ["network-wireless-signal-weak-symbolic"],
+    G_WIFI["none"]: ["network-wireless-signal-none-symbolic",
+                     "network-wireless-offline-symbolic",
+                     "network-wireless-no-route-symbolic"],
+}
+
+
+def accent():
+    try:
+        m = re.search(r"#([0-9a-fA-F]{6})", open(ACCENT_CSS).read())
+        if m:
+            return "#" + m.group(1)
+    except Exception:
+        pass
+    try:
+        v = open(os.path.join(HOME, ".config/hemo/accent")).read().strip()
+        if re.fullmatch(r"#?[0-9a-fA-F]{6}", v):
+            return v if v.startswith("#") else "#" + v
+    except Exception:
+        pass
+    return "#c82c3b"
+
+
+def base_theme():
+    """The Flat-Remix variant to inherit: --base arg, else saved, else whatever
+    gtk-icon-theme-name points at now (unless that's already us)."""
+    if "--base" in sys.argv:
+        return sys.argv[sys.argv.index("--base") + 1]
+    try:
+        saved = open(BASE_FILE).read().strip()
+        if saved:
+            return saved
+    except Exception:
+        pass
+    try:
+        m = re.search(r"(?m)^\s*gtk-icon-theme-name\s*=\s*(\S+)", open(GTK3).read())
+        if m and m.group(1) != THEME:
+            return m.group(1)
+    except Exception:
+        pass
+    return "Flat-Remix-Red-Dark"
+
+
+def font_file():
+    """The Nerd font for the glyphs: vendored path, then fontconfig, else None."""
+    for p in FONT_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    try:
+        p = subprocess.run(
+            ["fc-match", "-f", "%{file}", "JetBrainsMono Nerd Font Mono:style=Regular"],
+            capture_output=True, text=True).stdout.strip()
+        return p or None
+    except OSError:
+        return None
+
+
+def render(glyph, color, size, font_path):
+    from PIL import Image, ImageFont, ImageDraw
+    # render big, trim, then fit ~92% of the box centered — crisp at every size.
+    big = 160
+    f = ImageFont.truetype(font_path, big)
+    im = Image.new("RGBA", (big + 40, big + 40), (0, 0, 0, 0))
+    ImageDraw.Draw(im).text((20, 10), chr(glyph), font=f, fill=color)
+    im = im.crop(im.getbbox())
+    target = int(size * FILL)
+    w, h = im.size
+    scale = target / max(w, h)
+    im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))),
+                   Image.LANCZOS)
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.alpha_composite(im, ((size - im.width) // 2, (size - im.height) // 2))
+    return canvas
+
+
+def build():
+    col = accent()
+    base = base_theme()
+
+    # Pillow or the Nerd font may be absent (minimal image, failed font download).
+    # Don't crash the login autostart — skip the glyph theme and still start the
+    # tray, which then uses the inherited Flat-Remix network icons.
+    try:
+        import PIL  # noqa: F401
+    except Exception:
+        restart_applet()
+        print("hemo-net-icons: python3-pil not installed — "
+              "default network icons; launched nm-applet")
+        return
+    font_path = font_file()
+    if not font_path:
+        restart_applet()
+        print("hemo-net-icons: Nerd font not found — "
+              "default network icons; launched nm-applet")
+        return
+
+    rgb = tuple(int(col[i:i + 2], 16) for i in (1, 3, 5)) + (255,)
+
+    for s in SIZES:
+        d = os.path.join(THEME_DIR, f"{s}x{s}", "status")
+        os.makedirs(d, exist_ok=True)
+        for glyph, names in MAPPING.items():
+            img = render(glyph, rgb, s, font_path)
+            for n in names:
+                img.save(os.path.join(d, n + ".png"))
+
+    dirs = ",".join(f"{s}x{s}/status" for s in SIZES)
+    index = [f"[Icon Theme]\nName={THEME}\nComment=Hemo accent network glyphs\n"
+             f"Inherits={base}\nDirectories={dirs}\n"]
+    for s in SIZES:
+        index.append(f"\n[{s}x{s}/status]\nSize={s}\nContext=Status\nType=Fixed\n")
+    with open(os.path.join(THEME_DIR, "index.theme"), "w") as f:
+        f.write("".join(index))
+    with open(BASE_FILE, "w") as f:
+        f.write(base + "\n")
+
+    try:
+        subprocess.run(["gtk-update-icon-cache", "-f", "-t", THEME_DIR],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+    set_gtk_theme()
+    restart_applet()
+    print(f"Hemo-Net: {col} glyphs, inherits {base}")
+
+
+def set_gtk_theme():
+    try:
+        t = open(GTK3).read()
+    except Exception:
+        t = "[Settings]\n"
+    if re.search(r"(?m)^\s*gtk-icon-theme-name\s*=", t):
+        if re.search(rf"(?m)^\s*gtk-icon-theme-name\s*=\s*{THEME}\s*$", t):
+            return
+        t = re.sub(r"(?m)^(\s*gtk-icon-theme-name\s*=\s*).*$",
+                   rf"\g<1>{THEME}", t)
+    elif re.search(r"(?m)^\[Settings\]\s*$", t):
+        t = re.sub(r"(?m)^(\[Settings\]\s*)$",
+                   rf"\g<1>\ngtk-icon-theme-name={THEME}", t, count=1)
+    else:
+        t = f"[Settings]\ngtk-icon-theme-name={THEME}\n" + t
+    os.makedirs(os.path.dirname(GTK3), exist_ok=True)
+    with open(GTK3, "w") as f:
+        f.write(t)
+
+
+def restart_applet():
+    try:
+        subprocess.run(["pkill", "-x", "nm-applet"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if subprocess.run(["which", "nm-applet"],
+                          stdout=subprocess.DEVNULL).returncode == 0:
+            subprocess.Popen(["nm-applet"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    build()

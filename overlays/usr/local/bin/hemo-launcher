@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# hemo-launcher — the $mod+d launcher: the full rofi app search laid out as a
+# grid of big icons, with your pinned apps filling the first rows while the
+# search is empty. Typing searches every app straight away.
+#
+# How pins stay on top: with no input, rofi orders apps by its launch history
+# (~/.cache/rofi3.druncache, "count id.desktop" per line). We give each pin a
+# count no real usage reaches, keeping everyone else's counts as they are.
+#
+# Pins: ~/.config/hemo/pinned — one .desktop id per line, in grid order; # comments.
+set -u
+
+PINS="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/pinned"
+DEFAULT_PINS="kitty firefox-esr thunar kali-burpsuite md.obsidian.Obsidian cherrytree"
+HIST="${XDG_CACHE_HOME:-$HOME/.cache}/rofi3.druncache"
+THEME="${XDG_CONFIG_HOME:-$HOME/.config}/rofi/pinned.rasi"
+PIN_BASE=1000000
+
+pins() {
+    if [ -f "$PINS" ]; then
+        # first word of each line (older pin files carried a label after the id)
+        sed 's/#.*//' "$PINS" | awk 'NF { print $1 }'
+    else
+        printf '%s\n' $DEFAULT_PINS
+    fi
+}
+
+mapfile -t ids < <(pins)
+n=${#ids[@]}
+
+mkdir -p "$(dirname "$HIST")"
+{
+    # pins: highest count first, so they keep their order from the pins file
+    for i in "${!ids[@]}"; do
+        echo "$((PIN_BASE + n - i)) ${ids[$i]}.desktop"
+    done
+    # everything else keeps its real usage count (old pin boosts are dropped)
+    if [ -f "$HIST" ]; then
+        awk -v base="$PIN_BASE" -v list="$(printf '%s.desktop\n' "${ids[@]}")" '
+            BEGIN { split(list, p, "\n"); for (k in p) pinned[p[k]] = 1 }
+            NF == 2 && !($2 in pinned) && $1 < base' "$HIST"
+    fi
+} > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
+
+# banner for the theme's search bar: a wide strip rebuilt whenever its source
+# image changes. Source, in order:
+#   1. ~/.config/hemo/launcher-banner.{png,jpg} — your own image, any role
+#   2. /usr/share/hemo/banners/<role>.png       — a per-role banner
+#   3. /usr/share/hemo/banners/default.png      — the Hemo OS default banner
+#   4. the current wallpaper                     — fallback (original behaviour)
+# A dedicated banner (1-3) is fitted to the strip: very wide art (a logo bar) is
+# scaled to width and padded with its own edge color so nothing is cropped off;
+# near-strip art is centre-cropped to fill. The wallpaper is cut from its upper
+# area (the crop tuned to miss the logo).
+banner() {
+    local out="${XDG_CACHE_HOME:-$HOME/.cache}/hemo/launcher-banner.png"
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/hemo"
+    local role="" src="" dedicated=0
+
+    # role + wallpaper from the live theme
+    [ -r /var/lib/hemo/theme.env ] && role=$(sed -n 's/^HEMO_PRIMARY=//p' /var/lib/hemo/theme.env)
+
+    # 1) user override
+    local u
+    for u in "$cfg/launcher-banner.png" "$cfg/launcher-banner.jpg"; do
+        [ -f "$u" ] && { src="$u"; dedicated=1; break; }
+    done
+    # 2) per-role banner
+    if [ -z "$src" ] && [ -n "$role" ] && [ -f "/usr/share/hemo/banners/$role.png" ]; then
+        src="/usr/share/hemo/banners/$role.png"; dedicated=1
+    fi
+    # 3) default Hemo OS banner
+    if [ -z "$src" ] && [ -f "/usr/share/hemo/banners/default.png" ]; then
+        src="/usr/share/hemo/banners/default.png"; dedicated=1
+    fi
+    # 4) wallpaper fallback
+    if [ -z "$src" ]; then
+        local wp=""
+        [ -r /var/lib/hemo/theme.env ] && wp=$(sed -n 's/^HEMO_WALLPAPER=//p' /var/lib/hemo/theme.env)
+        wp="/usr/share/hemo/wallpapers/$wp"
+        [ -f "$wp" ] || wp=/usr/share/backgrounds/hemo-bg.png
+        src="$wp"
+    fi
+
+    [ -f "$src" ] && command -v convert >/dev/null || return 0
+    # rebuild only when the source file (path or mtime) changed
+    [ "$out" -nt "$src" ] && [ "$(cat "$out.src" 2>/dev/null)" = "$src" ] && return 0
+    mkdir -p "$(dirname "$out")"
+    if [ "$dedicated" = 1 ]; then
+        # ratio of the source; a wide bar (>4:1) is fitted + padded, not cropped
+        local wh ratio_x10
+        wh=$(identify -format '%w %h' "$src" 2>/dev/null)
+        ratio_x10=$(awk -v w="${wh% *}" -v h="${wh#* }" 'BEGIN{ if(h>0) printf "%d", (w/h)*10; else print 0 }')
+        if [ "${ratio_x10:-0}" -gt 40 ]; then
+            local pad
+            pad=$(convert "$src" -format '%[pixel:p{20,20}]' info: 2>/dev/null)
+            [ -n "$pad" ] || pad="#1b1714"
+            convert "$src" -resize 1400x -background "$pad" -gravity center -extent 1400x408 +repage "$out" \
+                && echo "$src" > "$out.src"
+        else
+            convert "$src" -resize 1400x408^ -gravity center -extent 1400x408 +repage "$out" \
+                && echo "$src" > "$out.src"
+        fi
+    else
+        convert "$src" -resize 1400x -gravity north -crop 1400x408+0+170 +repage "$out" \
+            && echo "$src" > "$out.src"
+    fi
+}
+banner
+
+exec rofi -show drun -theme "$THEME" "$@"

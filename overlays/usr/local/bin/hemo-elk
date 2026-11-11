@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# hemo-elk — run a local log-analytics stack (datastore + web UI) as Docker
+# containers, idle until invoked (Hemo's "heavy services as containers" model).
+# For the blue_host / blue_net analysts: drop EVTX/JSON/syslog in and explore it.
+#
+# TWO ENGINES, both optional, neither baked:
+#   opensearch  (DEFAULT) — OpenSearch + OpenSearch Dashboards, Apache-2.0, free.
+#   elastic               — Elasticsearch + Kibana (ELv2/SSPL; free for internal
+#                           use, some ML/connectors paid). Opt in with --engine.
+# Only ONE engine runs at a time; the choice is remembered in $DIR/engine.
+#
+# Everything binds to 127.0.0.1 only. Data lives in per-engine named volumes and
+# survives `down`. HEAVY: stop Arkime first (see the mutual-exclusion warning) —
+# this VM can't comfortably run both plus the desktop at 8 GB.
+#
+#   hemo-elk up                 # start the current engine (first run pulls images)
+#   hemo-elk --engine elastic up# switch to Elasticsearch+Kibana and start it
+#   hemo-elk engine [NAME]      # show, or set (opensearch|elastic), the engine
+#   hemo-elk ingest FILE [IDX]  # bulk-load NDJSON (one JSON doc per line) into IDX
+#   hemo-elk down               # stop (DATA KEPT)
+#   hemo-elk status             # container state
+#   hemo-elk url                # print the UI URL
+#   hemo-elk password           # auth note (localhost lab = anonymous)
+#   hemo-elk destroy            # stop AND delete this engine's data volume (asks)
+#
+# EVTX → Kibana: blue_host already ships hayabusa + chainsaw. Convert first, then
+# ingest the JSON, e.g.:
+#   hayabusa json-timeline -d /cases/evtx -J -o out.jsonl   # (or: chainsaw ... -j)
+#   hemo-elk ingest out.jsonl winlogs
+set -uo pipefail
+
+DIR=/opt/hemo/elk
+ENGINE_FILE="$DIR/engine"
+COMPOSE="$DIR/docker-compose.yml"
+ES_PORT=9200          # datastore, 127.0.0.1 only
+UI_PORT=5601          # Dashboards / Kibana, 127.0.0.1 only
+URL="http://127.0.0.1:${UI_PORT}/"
+DS_URL="http://127.0.0.1:${ES_PORT}"
+
+# Pinned (fragile services — pin so a bad "latest" can't break a build). Bump the
+# pair for an engine together. OpenSearch matches hemo-arkime's engine version.
+OS_IMAGE="docker.io/opensearchproject/opensearch:2.19.0"
+OSD_IMAGE="docker.io/opensearchproject/opensearch-dashboards:2.19.0"
+ES_IMAGE="docker.elastic.co/elasticsearch/elasticsearch:8.17.3"
+KIBANA_IMAGE="docker.elastic.co/kibana/kibana:8.17.3"
+
+dc(){
+  if docker compose version >/dev/null 2>&1; then docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@"
+  else echo "hemo-elk: docker compose not found (install docker.io + docker-compose)"; exit 1; fi
+}
+
+need_docker(){
+  command -v docker >/dev/null 2>&1 || { echo "hemo-elk: docker not installed"; exit 1; }
+  if ! docker info >/dev/null 2>&1; then
+    echo "hemo-elk: cannot talk to the docker daemon."
+    echo "  start it (sudo systemctl start docker) and make sure you're in the 'docker'"
+    echo "  group (re-login after 'sudo usermod -aG docker $USER'), or re-run with sudo."
+    exit 1
+  fi
+}
+
+# $DIR sits under root-owned /opt/hemo. Create it (sudo only if we can't) and hand
+# it to the invoking user, so the generated files here are writable without root.
+ensure_dir(){
+  [ -d "$DIR" ] && [ -w "$DIR" ] && return 0
+  if [ "$(id -u)" -eq 0 ]; then install -d "$DIR"
+  elif install -d "$DIR" 2>/dev/null; then :
+  else sudo install -d -o "$(id -u)" -g "$(id -g)" "$DIR" \
+         || { echo "hemo-elk: cannot create $DIR (need sudo)"; exit 1; }
+  fi
+}
+
+# Both Elasticsearch and OpenSearch refuse to start without enough mmap regions.
+ensure_sysctl(){
+  local want=262144 have
+  have=$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo 0)
+  [ "$have" -ge "$want" ] && return 0
+  echo "[hemo-elk] raising vm.max_map_count to $want (the datastore needs it)…"
+  if [ "$(id -u)" -eq 0 ]; then
+    sysctl -w vm.max_map_count=$want >/dev/null
+    printf 'vm.max_map_count=%s\n' "$want" > /etc/sysctl.d/99-hemo-elk.conf
+  else
+    sudo sysctl -w vm.max_map_count=$want >/dev/null
+    printf 'vm.max_map_count=%s\n' "$want" | sudo tee /etc/sysctl.d/99-hemo-elk.conf >/dev/null
+  fi
+}
+
+# Heavy services are mutually exclusive on an 8 GB box — warn if Arkime is up.
+warn_arkime(){
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^arkime-'; then
+    echo "[hemo-elk] WARNING: Arkime is running. Both datastores on 8 GB will thrash"
+    echo "           (and they share host ports). Consider: hemo-arkime down"
+  fi
+}
+
+current_engine(){
+  local e; e=$(cat "$ENGINE_FILE" 2>/dev/null)
+  case "$e" in elastic|opensearch) printf '%s' "$e";; *) printf 'opensearch';; esac
+}
+
+set_engine(){
+  local want="$1"
+  case "$want" in opensearch|elastic) ;; *) echo "hemo-elk: engine must be opensearch|elastic"; exit 1;; esac
+  ensure_dir
+  if [ -f "$COMPOSE" ] && dc -f "$COMPOSE" ps -q 2>/dev/null | grep -q .; then
+    echo "hemo-elk: a stack is up ($(current_engine)). Run 'hemo-elk down' before switching engines."
+    exit 1
+  fi
+  printf '%s\n' "$want" > "$ENGINE_FILE"
+  rm -f "$COMPOSE"          # force a regenerate for the new engine
+}
+
+write_compose(){
+  ensure_dir
+  local engine; engine=$(current_engine)
+  [ -f "$COMPOSE" ] && return 0
+  if [ "$engine" = elastic ]; then
+    cat > "$COMPOSE" <<EOF
+# Hemo-vendored log-analytics stack — ENGINE: elastic (Elasticsearch + Kibana).
+# Security disabled (localhost-only lab); everything bound to 127.0.0.1.
+services:
+  datastore:
+    image: ${ES_IMAGE}
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - bootstrap.memory_lock=true
+      # mirror hemo-arkime: don't zstd/gzip HTTP responses. Not strictly needed
+      # here (Kibana/Dashboards + the ingest curl handle compression fine), but
+      # kept for parity — an arkime-style async client choked on compressed bodies.
+      - http.compression=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes: [ "hemo-elk-es:/usr/share/elasticsearch/data" ]
+    ports: [ "127.0.0.1:${ES_PORT}:9200" ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  ui:
+    image: ${KIBANA_IMAGE}
+    environment:
+      - ELASTICSEARCH_HOSTS=http://datastore:9200
+    ports: [ "127.0.0.1:${UI_PORT}:5601" ]
+    depends_on:
+      datastore: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  hemo-elk-es:
+EOF
+  else
+    cat > "$COMPOSE" <<EOF
+# Hemo-vendored log-analytics stack — ENGINE: opensearch (OpenSearch + Dashboards).
+# Security plugin disabled (localhost-only lab); everything bound to 127.0.0.1.
+services:
+  datastore:
+    image: ${OS_IMAGE}
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # mirror hemo-arkime: don't zstd/gzip HTTP responses. Not strictly needed
+      # here (Dashboards + the ingest curl handle compression fine), but kept for
+      # parity — an arkime-style async client choked on compressed bodies.
+      - http.compression=false
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes: [ "hemo-elk-os:/usr/share/opensearch/data" ]
+    ports: [ "127.0.0.1:${ES_PORT}:9200" ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+  ui:
+    image: ${OSD_IMAGE}
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://datastore:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports: [ "127.0.0.1:${UI_PORT}:5601" ]
+    depends_on:
+      datastore: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  hemo-elk-os:
+EOF
+  fi
+  echo "  wrote $COMPOSE (engine: $engine)"
+}
+
+# --engine NAME may lead any verb: set the engine first, then run the verb.
+if [ "${1:-}" = "--engine" ]; then
+  [ $# -ge 2 ] || { echo "usage: hemo-elk --engine opensearch|elastic <verb>"; exit 1; }
+  set_engine "$2"; shift 2
+fi
+
+case "${1:-status}" in
+  up)
+    need_docker; ensure_sysctl; warn_arkime; write_compose
+    echo "[hemo-elk] starting engine '$(current_engine)' (first run pulls images, be patient)…"
+    dc -f "$COMPOSE" up -d
+    echo "[hemo-elk] UI (give it a minute to come up): $URL"
+    echo "[hemo-elk] load data:  hemo-elk ingest <file.jsonl> [index]   (or use the UI's file upload)"
+    ;;
+  engine)
+    if [ $# -ge 2 ]; then set_engine "$2"; echo "[hemo-elk] engine -> $2 (regenerated; run: hemo-elk up)"
+    else echo "engine: $(current_engine)   (set with: hemo-elk engine opensearch|elastic)"; fi
+    ;;
+  ingest)
+    need_docker; shift
+    file="${1:-}"; idx="${2:-hemo-logs}"
+    [ -n "$file" ] && [ -f "$file" ] || { echo "usage: hemo-elk ingest <file.jsonl> [index]  (NDJSON: one JSON doc per line)"; exit 1; }
+    curl -fs "$DS_URL" >/dev/null 2>&1 || { echo "hemo-elk: datastore not reachable at $DS_URL — is the stack up? (hemo-elk status)"; exit 1; }
+    echo "[hemo-elk] bulk-loading $(basename "$file") into index '$idx'…"
+    # wrap each JSON line with a bulk action header, stream to _bulk
+    awk -v idx="$idx" 'NF{print "{\"index\":{\"_index\":\"" idx "\"}}"; print}' "$file" \
+      | curl -s -H 'Content-Type: application/x-ndjson' -XPOST "$DS_URL/_bulk" --data-binary @- \
+      | python3 -I -c 'import json,sys
+try:
+    items=json.load(sys.stdin).get("items",[])
+    errs=sum(1 for it in items if it.get("index",{}).get("status",0)>=300)
+    print("  indexed", len(items)-errs, "doc(s),", errs, "error(s)")
+except Exception as e:
+    print("  bulk response could not be parsed:", e)'
+    echo "  refresh the index to see it in the UI:  curl -s -XPOST $DS_URL/$idx/_refresh"
+    ;;
+  down)
+    need_docker; write_compose; dc -f "$COMPOSE" down; echo "[hemo-elk] stopped (data kept)";;
+  status)
+    need_docker
+    echo "engine: $(current_engine)"
+    [ -f "$COMPOSE" ] && dc -f "$COMPOSE" ps 2>/dev/null || echo "not started — run: hemo-elk up";;
+  url) echo "$URL";;
+  password|passwd|pass)
+    echo "This is a localhost-only lab with auth disabled — the UI needs no login.";;
+  destroy)
+    need_docker; write_compose
+    printf "This DELETES the '%s' engine's data volume. Type 'yes': " "$(current_engine)"; read -r a
+    [ "$a" = yes ] || { echo "aborted"; exit 0; }
+    dc -f "$COMPOSE" down -v; echo "[hemo-elk] stack + data removed";;
+  *) echo "usage: hemo-elk [--engine opensearch|elastic] [up|down|status|url|password|ingest FILE [IDX]|engine [NAME]|destroy]"; exit 1;;
+esac

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# hemo-caffeine — keep the session awake for long jobs (cracking, scans, big
+# transfers): inhibits the idle screen-lock, screen blanking/DPMS, and suspend.
+# Toggle with $mod+Shift+c. State is a pidfile holding a backgrounded
+# systemd-inhibit; killing it releases the lock. Safe to call repeatedly.
+#
+#   hemo-caffeine [toggle|on|off|status]
+set -u
+STATE="${XDG_RUNTIME_DIR:-/tmp}/hemo-caffeine.pid"
+notify(){ command -v dunstify >/dev/null 2>&1 && dunstify -r 9701 -t 2500 "Caffeine" "$1" || true; }
+
+is_on(){ [ -f "$STATE" ] && kill -0 "$(cat "$STATE" 2>/dev/null)" 2>/dev/null; }
+
+on(){
+  is_on && { notify "Already keeping awake"; return; }
+  # systemd-inhibit holds an idle+sleep lock; it reaps the `sleep` on exit, so
+  # killing this PID releases everything. It reparents to init when we exit.
+  systemd-inhibit --what=idle:sleep --who=hemo --why="Caffeine (long job)" \
+      sleep infinity >/dev/null 2>&1 &
+  echo $! > "$STATE"
+  xset s off -dpms 2>/dev/null || true
+  notify "On — screen + sleep kept awake"
+}
+off(){
+  is_on && kill "$(cat "$STATE")" 2>/dev/null || true
+  rm -f "$STATE"
+  xset s 600 600 +dpms 2>/dev/null || true
+  notify "Off — normal idle lock restored"
+}
+case "${1:-toggle}" in
+  on)     on ;;
+  off)    off ;;
+  status) is_on && echo on || echo off ;;
+  *)      if is_on; then off; else on; fi ;;
+esac

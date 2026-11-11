@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# hemo-power — $mod+Shift+e / polybar power icon : a row of big icons for
+# lock / suspend / log out / reboot / shut down (theme: ~/.config/rofi/power.rasi).
+# Hotkeys l s o r p pick directly. Anything that ends the session asks to confirm.
+# A click accepts on button *release*: accepting on press let the release land on
+# the Yes/No menu that opens next, which rofi read as a click outside → cancelled.
+set -u
+
+LOCK="hemo-lock"
+
+# $1 = prompt, rest = "icon:label" rows → prints the chosen index (or hotkey index)
+menu() {
+    local prompt=$1; shift
+    local n=$# rows="" r
+    for r in "$@"; do
+        rows+="<span font='JetBrainsMono Nerd Font Mono 28'>${r%%:*}</span>"$'\n'"${r#*:}|"
+    done
+    local out rc
+    out=$(printf '%s' "${rows%|}" | rofi -dmenu -theme power -p "$prompt" \
+        -sep '|' -eh 4 -markup-rows -no-custom -format i -selected-row 0 \
+        -me-accept-entry '!MousePrimary' \
+        -theme-str "listview { columns: $n; } textbox-uptime { str: \"$(uptime -p | sed 's/^up //')\"; }" \
+        -kb-custom-1 l -kb-custom-2 s -kb-custom-3 o -kb-custom-4 r -kb-custom-5 p \
+        -kb-custom-6 y -kb-custom-7 n)
+    rc=$?
+    case $rc in
+        0) echo "$out" ;;
+        1[0-6]) echo "k$((rc - 9))" ;;   # custom-1..7 → k1..k7
+        *) return 1 ;;
+    esac
+}
+
+confirm() {
+    local c
+    c=$(menu "$1?" "󰄬:Yes" "󰜺:No") || return 1
+    [ "$c" = 0 ] || [ "$c" = k6 ]
+}
+
+choice=$(menu "Power" "󰌾:Lock" "󰤄:Suspend" "󰍃:Log out" "󰜉:Reboot" "󰐥:Shut down") || exit 0
+
+case $choice in
+    0|k1) exec $LOCK ;;
+    1|k2) $LOCK && exec systemctl suspend ;;
+    2|k3) confirm "Log out"   && exec i3-msg -q exit ;;
+    3|k4) confirm "Reboot"    && exec systemctl reboot ;;
+    4|k5) confirm "Shut down" && exec systemctl poweroff ;;
+esac

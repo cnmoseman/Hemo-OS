@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# hemo-serve — quick file server for transfers, bound to your VPN by default so
+# it is not exposed to the whole LAN. Serves the active engagement's loot/ (else
+# the current dir). Upload is on, so targets can push files back. Uses goshs if
+# present (HTTP/HTTPS/WebDAV/SMB), else falls back to Python's http.server
+# (download only). The target-side fetch one-liner is copied to the clipboard.
+#
+#   hemo-serve [dir] [port]      serve dir (default: engagement loot/ or cwd) on port (8000)
+#   hemo-serve --tls             self-signed HTTPS
+#   hemo-serve --webdav          also serve WebDAV (Windows `net use` / davfs)
+#   hemo-serve --smb             also serve an SMB share (Windows targets)
+#   hemo-serve --read-only       no upload
+#   hemo-serve --all             bind 0.0.0.0 (every interface) — use with care
+#
+# Env: HEMO_SERVE_RAW=1 shows goshs's own banner and all its INFO lines
+# (otherwise the banner + lines that duplicate the header above are filtered).
+set -u
+
+PORT=8000 DIR="" TLS=0 WEBDAV=0 SMB=0 RO=0 BINDALL=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --tls)       TLS=1 ;;
+        --webdav)    WEBDAV=1 ;;
+        --smb)       SMB=1 ;;
+        --read-only|-ro) RO=1 ;;
+        --all)       BINDALL=1 ;;
+        -h|--help)   sed -n '2,16s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        -*)          echo "hemo-serve: unknown option $1 (try -h)" >&2; exit 1 ;;
+        *)           if [ -z "$DIR" ] && ! printf '%s' "$1" | grep -qE '^[0-9]+$'; then DIR="$1"
+                     else PORT="$1"; fi ;;
+    esac
+    shift
+done
+
+# directory: arg, else active engagement loot/, else cwd
+if [ -z "$DIR" ]; then
+    eng="$(hemo-engagement path 2>/dev/null || true)"
+    if [ -n "$eng" ] && [ -d "$eng/loot" ]; then DIR="$eng/loot"; else DIR="$PWD"; fi
+fi
+[ -d "$DIR" ] || { echo "hemo-serve: no such directory: $DIR" >&2; exit 1; }
+
+# bind address: VPN if up, else LAN, unless --all
+if [ "$BINDALL" = 1 ]; then
+    IP=0.0.0.0
+else
+    IP="$(hemo-bar-ip vpn 2>/dev/null)"
+    [ -n "$IP" ] || IP="$(hemo-bar-ip lan 2>/dev/null)"
+    [ -n "$IP" ] || { echo "hemo-serve: no VPN or LAN address found; use --all to bind every interface" >&2; exit 1; }
+fi
+
+SCHEME=http; [ "$TLS" = 1 ] && SCHEME=https
+URL="$SCHEME://$IP:$PORT"
+
+# target-side fetch one-liners (copy the curl one to the clipboard)
+k=""; [ "$TLS" = 1 ] && k="k"         # curl -k / insecure for self-signed
+CURL="curl -s$k $URL/<file> -O"
+PWSH="iwr $URL/<file> -OutFile <file>$([ "$TLS" = 1 ] && echo ' -SkipCertificateCheck')"
+CERTUTIL="certutil -urlcache -f $URL/<file> <file>"
+command -v xclip >/dev/null 2>&1 && printf '%s' "$CURL" | xclip -selection clipboard >/dev/null 2>&1 || true
+
+echo "serving   $DIR"
+echo "at        $URL   ($([ "$RO" = 1 ] && echo 'download only' || echo 'upload + download'))"
+[ "$WEBDAV" = 1 ] && echo "webdav    $SCHEME://$IP:8001"
+[ "$SMB" = 1 ]    && echo "smb       //$IP/goshs  (port 445)"
+echo
+echo "fetch on target (curl copied to clipboard):"
+echo "  linux   $CURL"
+echo "  pwsh    $PWSH"
+echo "  win     $CERTUTIL"
+echo
+echo "Ctrl-C to stop."
+
+if command -v goshs >/dev/null 2>&1; then
+    set -- -i "$IP" -p "$PORT" -d "$DIR"
+    [ "$TLS" = 1 ]    && set -- "$@" -s -ss
+    [ "$WEBDAV" = 1 ] && set -- "$@" -w
+    [ "$SMB" = 1 ]    && set -- "$@" -smb
+    [ "$RO" = 1 ]     && set -- "$@" -ro
+    # Filter goshs's own output: drop its ASCII banner, version check and the
+    # INFO lines that duplicate what hemo-serve already printed. Upload /
+    # download / error events still come through. HEMO_SERVE_RAW=1 bypasses.
+    if [ "${HEMO_SERVE_RAW:-0}" = 1 ]; then
+        exec goshs "$@"
+    fi
+    goshs "$@" 2>&1 | awk '
+      /^(INFO|WARN|ERROR|DEBUG|FATAL)/ {
+        if (/You are (already )?running the newest version/) next
+        if (/Serving on|Serving HTTP from/) next
+        if (/Download embedded file/) next
+        if (/Shutdown complete/) next
+        if (/Received CTRL\+C/) next
+        print; fflush(); next
+      }
+      # banner lines + blanks: drop
+    '
+    exit "${PIPESTATUS[0]}"
+fi
+
+# fallback: Python http.server (download only; no TLS/upload)
+echo "note: goshs not installed — using python http.server (download only)." >&2
+[ "$TLS$WEBDAV$SMB$RO" = "0000" ] || echo "note: --tls/--webdav/--smb/--read-only need goshs; ignored." >&2
+exec python3 -m http.server "$PORT" --bind "$IP" --directory "$DIR"

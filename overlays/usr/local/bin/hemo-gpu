@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# hemo-gpu — detect a real (passed-through) GPU and, if present, enable GPU
+# acceleration for cracking; otherwise stay CPU-only.
+#
+# Hemo ships CPU-only by default (most clones are VMware/VirtualBox with only a
+# paravirtual display adapter, which is useless for compute). But on a KVM/QEMU
+# guest with VFIO GPU passthrough — or bare metal later — a real NVIDIA/AMD card
+# shows up on the PCI bus. This installs the driver + OpenCL/CUDA runtime so
+# hashcat uses it. First boot auto-detects and offers it; run it by hand anytime.
+#
+#   hemo-gpu detect     # print the discrete GPU (or "none"); exit 0 if found
+#   hemo-gpu status     # detection + whether drivers/OpenCL are live
+#   hemo-gpu enable      # root: install drivers + runtime for the detected card
+#   hemo-gpu enable --cuda   # NVIDIA: also install the full CUDA toolkit (large)
+#   hemo-gpu disable    # root: remove them, back to CPU-only
+#
+# Package names are Kali/Debian and flagged CONFIRM — verify on first real build.
+set -uo pipefail
+
+STATE=/var/lib/hemo
+MARK="$STATE/gpu.enabled"
+
+# paravirtual display adapters (NOT compute GPUs) — vendor IDs to ignore
+PARAVIRT_RE='15ad|80ee|1234|1af4|1b36|1013|1a03|0000'   # vmware vbox bochs virtio qxl cirrus aspeed
+
+# print "VENDOR\tMODEL [id]\tPCIVENDOR" for the first real GPU, or nothing
+_probe(){
+  command -v lspci >/dev/null 2>&1 || return 0
+  # VGA (0300), 3D (0302) and Display (0380) controllers, with vendor:device ids
+  lspci -D -nn | grep -iE 'VGA compatible controller|3D controller|Display controller' | while read -r line; do
+    ids=$(printf '%s' "$line" | grep -oE '\[[0-9a-f]{4}:[0-9a-f]{4}\]' | head -1 | tr -d '[]')
+    vend=${ids%%:*}
+    echo "$vend" | grep -qiE "$PARAVIRT_RE" && continue
+    case "$vend" in
+      10de) v=NVIDIA;; 1002) v=AMD;; 8086) v=Intel;; *) v="$vend";; esac
+    model=$(printf '%s' "$line" | sed -E 's/^[^ ]+ [^:]+: //')
+    printf '%s\t%s\t%s\n' "$v" "$model" "$vend"
+    return 0
+  done
+}
+
+cmd_detect(){
+  local hit; hit="$(_probe | head -1)"
+  if [ -z "$hit" ]; then echo "none"; return 1; fi
+  printf '%s %s\n' "$(echo "$hit" | cut -f1)" "$(echo "$hit" | cut -f2)"
+}
+
+cmd_status(){
+  local virt; virt="$(systemd-detect-virt 2>/dev/null || echo unknown)"
+  echo "hypervisor : $virt"
+  echo -n "discrete GPU: "; cmd_detect || true
+  [ -f "$MARK" ] && echo "drivers    : enabled ($(cat "$MARK"))" || echo "drivers    : not installed (CPU-only)"
+  if command -v clinfo >/dev/null 2>&1; then
+    echo "OpenCL devs: $(clinfo -l 2>/dev/null | grep -c 'Device' || echo 0)"
+  fi
+  command -v hashcat >/dev/null 2>&1 && echo "hashcat backends:" && hashcat -I 2>/dev/null | grep -iE 'Backend Device|Type|Name' | sed 's/^/  /' || true
+}
+
+cmd_enable(){
+  [ "$(id -u)" -eq 0 ] || { echo "hemo-gpu: run as root (sudo hemo-gpu enable)"; exit 1; }
+  local hit vend; hit="$(_probe | head -1)"
+  if [ -z "$hit" ]; then
+    echo "[hemo-gpu] no discrete GPU on the PCI bus — staying CPU-only (hashcat uses CPU)."
+    echo "           (A VMware/VirtualBox paravirtual display can't do compute. Use KVM + VFIO passthrough.)"
+    exit 0
+  fi
+  vend="$(echo "$hit" | cut -f1)"; local model; model="$(echo "$hit" | cut -f2)"
+  echo "[hemo-gpu] detected: $vend $model"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null 2>&1 || true
+  # build prerequisites for the kernel module (DKMS) + an OpenCL loader
+  local common="linux-headers-$(uname -r) dkms ocl-icd-libopencl1 clinfo pciutils"
+
+  case "$vend" in
+    NVIDIA)
+      echo "[hemo-gpu] installing NVIDIA driver + OpenCL (CONFIRM names in snapshot)"
+      apt-get install -y --no-install-recommends $common nvidia-driver nvidia-opencl-icd || {
+        echo "[hemo-gpu] ! driver install failed — check names (nvidia-driver / nvidia-opencl-icd)"; exit 1; }
+      if [ "${1:-}" = "--cuda" ]; then
+        echo "[hemo-gpu] + full CUDA toolkit (large)"
+        apt-get install -y --no-install-recommends nvidia-cuda-toolkit || echo "  ! cuda toolkit failed (optional)"
+      fi
+      echo "NVIDIA" > "$MARK";;
+    AMD)
+      echo "[hemo-gpu] installing AMD firmware + Mesa OpenCL (CONFIRM names in snapshot)"
+      apt-get install -y --no-install-recommends $common firmware-amd-graphics mesa-opencl-icd || {
+        echo "[hemo-gpu] ! install failed — check names"; exit 1; }
+      echo "  note: for full ROCm/HIP cracking performance, install ROCm from AMD's repo (heavier)."
+      echo "AMD" > "$MARK";;
+    Intel)
+      echo "[hemo-gpu] installing Intel OpenCL (NEO) (CONFIRM names in snapshot)"
+      apt-get install -y --no-install-recommends $common intel-opencl-icd || {
+        echo "[hemo-gpu] ! install failed — check names"; exit 1; }
+      echo "Intel" > "$MARK";;
+    *) echo "[hemo-gpu] unrecognised GPU vendor id '$vend' — install drivers manually."; exit 1;;
+  esac
+
+  echo "[hemo-gpu] done. REBOOT so the kernel module loads, then verify: hashcat -I"
+}
+
+cmd_disable(){
+  [ "$(id -u)" -eq 0 ] || { echo "hemo-gpu: run as root (sudo hemo-gpu disable)"; exit 1; }
+  [ -f "$MARK" ] || { echo "[hemo-gpu] nothing to disable (already CPU-only)."; exit 0; }
+  local vend; vend="$(cat "$MARK")"
+  export DEBIAN_FRONTEND=noninteractive
+  case "$vend" in
+    NVIDIA) apt-get purge -y 'nvidia-*' nvidia-opencl-icd >/dev/null 2>&1 || true;;
+    AMD)    apt-get purge -y mesa-opencl-icd >/dev/null 2>&1 || true;;
+    Intel)  apt-get purge -y intel-opencl-icd >/dev/null 2>&1 || true;;
+  esac
+  apt-get autoremove --purge -y >/dev/null 2>&1 || true
+  rm -f "$MARK"
+  echo "[hemo-gpu] GPU drivers removed — back to CPU-only. Reboot recommended."
+}
+
+case "${1:-status}" in
+  detect)  cmd_detect;;
+  status)  cmd_status;;
+  enable)  shift; cmd_enable "$@";;
+  disable) cmd_disable;;
+  *) echo "usage: hemo-gpu [detect|status|enable [--cuda]|disable]"; exit 1;;
+esac

@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# hemo-arkime — run Arkime (full-packet PCAP indexing + search) as a local
+# Docker stack, idle until invoked (Hemo's "heavy services as containers" model;
+# roles.yml marks Arkime blue_net as container-only, not an apt role tool).
+#
+# Stack: OpenSearch (datastore) + Arkime viewer. The viewer is bound to
+# 127.0.0.1 only. Designed for OFFLINE analysis — import a capture and search it;
+# live interface capture needs host networking + capabilities and is opt-in
+# (see `capture`). Data lives in named volumes and survives `down`.
+#
+#   hemo-arkime up            # start OpenSearch + viewer (first run pulls images)
+#   hemo-arkime init          # one-time: create the DB schema + admin user
+#   hemo-arkime import FILE…  # index one or more .pcap files
+#   hemo-arkime down          # stop (DATA KEPT)
+#   hemo-arkime status        # container state
+#   hemo-arkime url           # print the local URL
+#   hemo-arkime password      # print the generated admin password
+#   hemo-arkime destroy       # stop AND delete all data volumes (asks first)
+set -uo pipefail
+
+DIR=/opt/hemo/arkime
+COMPOSE="$DIR/docker-compose.yml"
+CONFIG="$DIR/config.ini"
+CREDS="$DIR/admin.cred"
+URL="http://127.0.0.1:8005/"
+
+# Pinned in the kali-vm pipeline; hand-build uses these tags.
+OS_IMAGE="docker.io/opensearchproject/opensearch:2.19.0"
+# Arkime ships no official container image, so we BUILD one from the official
+# release .deb (see $ARKIME_CONTEXT/Dockerfile — verified by sha256). First `up`
+# builds it; thereafter the local tag is reused. Bump both together.
+ARKIME_VERSION="5.7.0"
+ARKIME_IMAGE="hemo/arkime:${ARKIME_VERSION}"
+ARKIME_CONTEXT="/usr/share/hemo/arkime"
+
+dc(){
+  if docker compose version >/dev/null 2>&1; then docker compose "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@"
+  else echo "hemo-arkime: docker compose not found (install docker.io + docker-compose)"; exit 1; fi
+}
+
+need_docker(){
+  command -v docker >/dev/null 2>&1 || { echo "hemo-arkime: docker not installed"; exit 1; }
+  if ! docker info >/dev/null 2>&1; then
+    echo "hemo-arkime: cannot talk to the docker daemon."
+    echo "  start it (sudo systemctl start docker) and make sure you're in the 'docker'"
+    echo "  group (re-login after 'sudo usermod -aG docker $USER'), or re-run with sudo."
+    exit 1
+  fi
+}
+
+# OpenSearch refuses to start unless the host allows enough mmap regions.
+ensure_sysctl(){
+  local want=262144 have
+  have=$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo 0)
+  [ "$have" -ge "$want" ] && return 0
+  echo "[hemo-arkime] raising vm.max_map_count to $want (OpenSearch needs it)…"
+  if [ "$(id -u)" -eq 0 ]; then
+    sysctl -w vm.max_map_count=$want >/dev/null
+    printf 'vm.max_map_count=%s\n' "$want" > /etc/sysctl.d/99-hemo-arkime.conf
+  else
+    sudo sysctl -w vm.max_map_count=$want >/dev/null
+    printf 'vm.max_map_count=%s\n' "$want" | sudo tee /etc/sysctl.d/99-hemo-arkime.conf >/dev/null
+  fi
+}
+
+# $DIR sits under root-owned /opt/hemo. Create it (sudo only if we can't) and hand
+# it to the invoking user, so the compose/config files here are writable without
+# root — same no-sudo, docker-group model as `up`.
+ensure_dir(){
+  [ -d "$DIR" ] && [ -w "$DIR" ] && return 0
+  if [ "$(id -u)" -eq 0 ]; then install -d "$DIR"
+  elif install -d "$DIR" 2>/dev/null; then :
+  else sudo install -d -o "$(id -u)" -g "$(id -g)" "$DIR" \
+         || { echo "hemo-arkime: cannot create $DIR (need sudo)"; exit 1; }
+  fi
+}
+
+write_files(){
+  ensure_dir
+  if [ ! -f "$CONFIG" ]; then
+    # minimal viewer/capture config; secret randomised per box
+    cat > "$CONFIG" <<EOF
+[default]
+elasticsearch=http://opensearch:9200
+rotateIndex=daily
+passwordSecret=$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+httpRealm=Arkime
+interface=eth0
+pcapDir=/opt/arkime/raw
+maxFileSizeG=12
+viewPort=8005
+viewHost=0.0.0.0
+userNameHeader=
+EOF
+    echo "  wrote $CONFIG"
+  fi
+  [ -f "$COMPOSE" ] && return 0
+  cat > "$COMPOSE" <<EOF
+# Hemo-vendored Arkime stack. Viewer bound to localhost only; OFFLINE analysis.
+services:
+  opensearch:
+    image: ${OS_IMAGE}
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # CRITICAL: OpenSearch 2.19 replies zstd-compressed, and arkime capture's
+      # async HTTP client never finalises such a response — one request stays
+      # outstanding forever, so capture gates on a never-empty ES queue and NEVER
+      # starts its pcap reader (reads 0 packets, never exits). Turning off response
+      # compression makes offline `import` actually index sessions. Do not remove.
+      - http.compression=false
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes: [ "hemo-arkime-os:/usr/share/opensearch/data" ]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  viewer:
+    build:
+      context: ${ARKIME_CONTEXT}
+      args: { ARKIME_VERSION: "${ARKIME_VERSION}" }
+    image: ${ARKIME_IMAGE}
+    working_dir: /opt/arkime/viewer
+    command: /opt/arkime/bin/node viewer.js -c /opt/arkime/etc/config.ini
+    ports: [ "127.0.0.1:8005:8005" ]
+    volumes:
+      - "${CONFIG}:/opt/arkime/etc/config.ini:ro"
+      - "hemo-arkime-raw:/opt/arkime/raw"
+    depends_on:
+      opensearch: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  hemo-arkime-os:
+  hemo-arkime-raw:
+EOF
+  echo "  wrote $COMPOSE"
+}
+
+case "${1:-status}" in
+  up)
+    need_docker; ensure_sysctl; write_files
+    # Build the Arkime image from the vendored Dockerfile the first time (it isn't
+    # on any registry — see the Dockerfile). Thereafter the local tag is reused.
+    if ! docker image inspect "$ARKIME_IMAGE" >/dev/null 2>&1; then
+      [ -f "$ARKIME_CONTEXT/Dockerfile" ] || { echo "hemo-arkime: missing $ARKIME_CONTEXT/Dockerfile (overlay not installed?)"; exit 1; }
+      echo "[hemo-arkime] building $ARKIME_IMAGE from the official Arkime .deb (first run, a few min)…"
+      dc -f "$COMPOSE" build viewer || { echo "  build failed — see the output above"; exit 1; }
+    fi
+    echo "[hemo-arkime] starting OpenSearch + viewer (first run pulls OpenSearch, be patient)…"
+    dc -f "$COMPOSE" up -d
+    echo "[hemo-arkime] once OpenSearch is healthy, run:  hemo-arkime init"
+    echo "[hemo-arkime] UI: $URL"
+    ;;
+  init)
+    need_docker
+    echo "[hemo-arkime] initialising the OpenSearch schema (one time)…"
+    # The viewer won't stay up until the schema exists, so run init in a throwaway
+    # container (`run --rm`, not `exec` into the restarting viewer). --no-deps:
+    # OpenSearch is already up from `up`.
+    dc -f "$COMPOSE" run --rm --no-deps -T --entrypoint sh viewer \
+        -c "echo INIT | /opt/arkime/db/db.pl http://opensearch:9200 init" \
+      || { echo "  init failed — is OpenSearch healthy? (hemo-arkime status)"; exit 1; }
+    pass=$(head -c12 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    dc -f "$COMPOSE" run --rm --no-deps -T --entrypoint /opt/arkime/bin/arkime_add_user.sh viewer \
+        admin "Hemo Admin" "$pass" --admin \
+      && { umask 077; printf '%s\n' "$pass" > "$CREDS"; echo "[hemo-arkime] admin password saved: hemo-arkime password"; }
+    # schema exists now — nudge the viewer so it comes up cleanly
+    dc -f "$COMPOSE" up -d viewer >/dev/null 2>&1 || true
+    ;;
+  import)
+    need_docker; shift
+    [ $# -gt 0 ] || { echo "usage: hemo-arkime import <file.pcap> [more.pcap…]"; exit 1; }
+    for f in "$@"; do
+      [ -f "$f" ] || { echo "  skip (not found): $f"; continue; }
+      base=$(basename "$f")
+      echo "[hemo-arkime] importing $base…"
+      docker cp "$f" "$(dc -f "$COMPOSE" ps -q viewer)":/opt/arkime/raw/"$base" \
+        && dc -f "$COMPOSE" exec -T -w /opt/arkime viewer \
+             /opt/arkime/bin/capture -c /opt/arkime/etc/config.ini -r /opt/arkime/raw/"$base" \
+        && echo "  done: $base"
+    done
+    ;;
+  capture)
+    echo "Live capture needs host networking + NET_ADMIN/NET_RAW and an interface."
+    echo "It is intentionally not wired into the localhost-only stack. For live work,"
+    echo "run capture on the host and point Arkime at the written PCAPs, or import"
+    echo "files with:  hemo-arkime import <file.pcap>"
+    ;;
+  down)
+    need_docker; dc -f "$COMPOSE" down; echo "[hemo-arkime] stopped (data kept)";;
+  status)
+    need_docker; dc -f "$COMPOSE" ps 2>/dev/null || echo "not initialised — run: hemo-arkime up";;
+  url) echo "$URL";;
+  password|passwd|pass)
+    if [ -s "$CREDS" ]; then echo "user: admin  password: $(cat "$CREDS")"
+    else echo "no saved password — run: hemo-arkime init"; fi;;
+  destroy)
+    need_docker
+    printf "This DELETES all Arkime data (OpenSearch + raw PCAP volumes). Type 'yes': "; read -r a
+    [ "$a" = yes ] || { echo "aborted"; exit 0; }
+    dc -f "$COMPOSE" down -v; rm -f "$CREDS"; echo "[hemo-arkime] stack + data removed";;
+  *) echo "usage: hemo-arkime [up|init|import FILE…|down|status|url|password|destroy]"; exit 1;;
+esac

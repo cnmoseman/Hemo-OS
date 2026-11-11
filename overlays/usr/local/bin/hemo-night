@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# hemo-night — toggle the night-light (gammastep) warm screen tint. OFF by
+# default so report screenshots keep true colors; flip it on for late sessions.
+# Toggle with $mod+Shift+b. Reads ~/.config/gammastep/config.ini for the
+# day/night temperatures and location (edit lat/lon there for your area).
+#
+#   hemo-night [toggle|on|off|status]
+set -u
+command -v gammastep >/dev/null 2>&1 || { echo "gammastep not found"; exit 1; }
+notify(){ command -v dunstify >/dev/null 2>&1 && \
+  dunstify -a hemo-night -r 9703 -t "${1}" -h "string:x-dunst-stack-tag:hemo-night" "${2}" "${3:-}" || true; }
+
+running(){ pgrep -x gammastep >/dev/null 2>&1; }
+
+turn_on(){
+  running || setsid gammastep >/dev/null 2>&1 &
+  notify 1500 "Night light on" "Warm screen tint"
+}
+turn_off(){
+  pkill -x gammastep 2>/dev/null
+  # gammastep restores the gamma ramp on SIGTERM; -x -r forces a reset if not
+  gammastep -x >/dev/null 2>&1 || true
+  notify 1500 "Night light off" "True colors"
+}
+
+case "${1:-toggle}" in
+  on)     turn_on ;;
+  off)    turn_off ;;
+  status) running && echo on || echo off ;;
+  *)      running && turn_off || turn_on ;;
+esac

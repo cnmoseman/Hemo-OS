@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# hemo-target — set the current target: shown in the bar (click to copy) and in
+# the engagement prompt. Kept in a file, never an exported variable, so it is not
+# visible in `env` or inherited by child processes. Use `t` in a shell to print
+# it, e.g. `nmap "$(t)"`.
+#   hemo-target 10.10.10.5     set it (an IP, hostname, or range)
+#   hemo-target                print it
+#   hemo-target -c             clear it
+
+F="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/target"
+
+case "${1:-}" in
+    "")
+        [ -s "$F" ] && cat "$F" || echo "no target set (hemo-target <ip>)"
+        ;;
+    -c|--clear)
+        rm -f "$F"
+        e="$(hemo-engagement path 2>/dev/null)" && [ "$e" ] && rm -f "$e/target"
+        echo "target cleared"
+        ;;
+    -h|--help)
+        sed -n '2,8s/^# \{0,1\}//p' "$0"
+        ;;
+    *)
+        mkdir -p "$(dirname "$F")"
+        printf '%s\n' "$1" > "$F"
+        # remember it in the active engagement, so switching back restores it
+        e="$(hemo-engagement path 2>/dev/null)" && [ "$e" ] && printf '%s\n' "$1" > "$e/target"
+        echo "target: $1"
+        ;;
+esac

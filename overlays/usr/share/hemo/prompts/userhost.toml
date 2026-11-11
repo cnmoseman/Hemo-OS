@@ -1,0 +1,23 @@
+# Hemo prompt: userhost — user@host folder ❯ on one line.
+# Chosen in Appearance > Prompt; edit freely (picking a prompt again overwrites).
+add_newline = false
+format = "${custom.engagement}$username$hostname $directory$git_branch$character"
+
+[custom.engagement]
+description = "Active Hemo engagement (slug)"
+command = "basename \"$(hemo-engagement path 2>/dev/null)\""
+when = "hemo-engagement path >/dev/null 2>&1"
+format = "[@$output]($style) "
+style = "bold accent"
+
+[username]
+show_always = true
+format = "[$user]($style)"
+style_user = "bold accent"
+
+[hostname]
+ssh_only = false
+format = "[@](dimmed)[$hostname](bold accent)"
+
+[directory]
+format = "[$path]($style) "

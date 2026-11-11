@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# hemo-pywal — OPT-IN: let pywal derive the whole desktop theme from the current
+# wallpaper, overriding Hemo's curated Saddle theme. No contrast guarantees — this
+# is the "take over everything" switch for people who want a wallpaper-matched rice.
+# Turn it off to return to the deliberate, legible Saddle theme + role accent.
+#
+#   hemo-pywal            # toggle on/off
+#   hemo-pywal on|off     # force
+#   hemo-pywal status
+#
+# State: ~/.config/hemo/pywal (present = on). While on, a light/dark switch
+# re-derives from the wallpaper (wal's own light mode).
+set -uo pipefail
+
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+HEMO="$CFG/hemo"
+STATE="$HEMO/pywal"
+note(){ command -v dunstify >/dev/null && dunstify -a Hemo -u low "Hemo" "$1" 2>/dev/null || true; echo "[hemo-pywal] $1"; }
+
+have_wal(){ command -v wal >/dev/null 2>&1; }
+
+ensure_wal(){
+  have_wal && return 0
+  note "installing pywal…"
+  if command -v pipx >/dev/null; then
+    PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin sudo -E pipx install pywal >/dev/null 2>&1 \
+      || pipx install pywal >/dev/null 2>&1
+  fi
+  have_wal || { note "could not install pywal (needs: pipx install pywal)"; return 1; }
+}
+
+current_wallpaper(){
+  # the role/base wallpaper Hemo set, else whatever ~/.fehbg points at
+  local wp="" m
+  # the image last set from Appearance or a role (source, not the padded cache)
+  wp=$(cat "$HEMO/wallpaper" 2>/dev/null)
+  [ -f "$wp" ] && { echo "$wp"; return; }
+  wp=""
+  m=$(sed -n 's/^HEMO_WALLPAPER=//p' /var/lib/hemo/theme.env 2>/dev/null)
+  [ -n "$m" ] && wp="/usr/share/hemo/wallpapers/$m"
+  [ -f "$wp" ] || wp=$(grep -oE "'[^']+\.(png|jpg|jpeg)'" "$HOME/.fehbg" 2>/dev/null | tail -1 | tr -d "'")
+  [ -f "$wp" ] || wp=/usr/share/hemo/wallpapers/hemo-bg.png
+  echo "$wp"
+}
+
+pywal_on(){
+  ensure_wal || return 1
+  local wp mode light=""
+  wp=$(current_wallpaper)
+  mode=$(cat "$HEMO/mode" 2>/dev/null); [ "$mode" = light ] && light="-l"
+  note "deriving a scheme from $(basename "$wp")…"
+  # -n: don't set the wallpaper, -s/-t/-e: don't touch terminals/reload (Hemo applies)
+  wal -i "$wp" $light -n -s -t -e -q >/dev/null 2>&1 || { note "wal failed on that image"; return 1; }
+  mkdir -p "$HEMO"; echo 1 > "$STATE"
+  hemo-role-apply --pywal >/dev/null 2>&1
+  note "pywal ON — theme now follows the wallpaper (not Saddle)"
+}
+
+pywal_off(){
+  rm -f "$STATE"
+  # restore Saddle: re-apply the current role (or the stored accent)
+  local role; role=$(cat /var/lib/hemo/primary 2>/dev/null)
+  if [ -n "$role" ]; then
+    hemo-role-apply --theme-only "$role" >/dev/null 2>&1 \
+      || hemo-role-apply --accent "$(cat "$HEMO/accent" 2>/dev/null || echo '#c41e2f')" >/dev/null 2>&1
+  else
+    hemo-role-apply --accent "$(cat "$HEMO/accent" 2>/dev/null || echo '#c41e2f')" >/dev/null 2>&1
+  fi
+  note "pywal OFF — back to the Saddle theme"
+}
+
+case "${1:-toggle}" in
+  toggle) [ -f "$STATE" ] && pywal_off || pywal_on ;;
+  on)     pywal_on ;;
+  off)    pywal_off ;;
+  status) [ -f "$STATE" ] && echo "pywal: ON (wallpaper-derived)" || echo "pywal: off (Saddle theme)" ;;
+  *) echo "usage: hemo-pywal [toggle|on|off|status]"; exit 1 ;;
+esac

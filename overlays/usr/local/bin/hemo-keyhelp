@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""hemo-keyhelp — $mod+/ : a searchable list of every i3 key binding, read live
+from ~/.config/i3/config and config.d/*.conf (so it never goes stale).
+Pick a row to run that binding's command. Alt+E opens hemo-hotkeys to add or
+edit your own hotkeys; their '# desc:' comments are shown as the description."""
+import glob
+import os
+import re
+import subprocess
+import sys
+
+home = os.path.expanduser("~/.config/i3")
+files = [os.path.join(home, "config")] + sorted(glob.glob(os.path.join(home, "config.d", "*.conf")))
+
+KEYNAMES = {"Mod4": "Super", "Mod1": "Alt", "Ctrl": "Ctrl", "Control": "Ctrl",
+            "Return": "Enter", "grave": "`", "minus": "-", "slash": "/",
+            "space": "Space", "Print": "PrtSc", "Tab": "Tab",
+            "XF86AudioRaiseVolume": "Vol+ key", "XF86AudioLowerVolume": "Vol- key",
+            "XF86AudioMute": "Mute key"}
+
+
+def pretty_keys(combo, variables):
+    for k, v in variables.items():
+        combo = combo.replace(k, v)
+    parts = []
+    for p in combo.split("+"):
+        p = KEYNAMES.get(p, p)
+        parts.append(p.upper() if len(p) == 1 else p)
+    return "+".join(parts)
+
+
+# plain-English names for common commands (first match wins); anything else
+# shows its raw command
+DESCRIBE = [
+    (r"^kitty$", "Terminal"),
+    (r"^thunar$", "File manager"),
+    (r"^hemo-launcher$", "App launcher (pinned apps)"),
+    (r"^hemo-welcome( --settings)?$", "Hemo settings / welcome hub"),
+    (r"^firefox-esr", "Web browser"),
+    (r"greenclip", "Clipboard history"),
+    (r"^rofi -show window", "Switch window"),
+    (r"^kill$", "Close window"),
+    (r"^restart$", "Restart i3 (keeps windows)"),
+    (r"^hemo-power$", "Power menu: lock / log out / reboot / shut down"),
+    (r"^(hemo-lock|i3lock)", "Lock screen"),
+    (r"^hemo-dropdown$", "Drop-down terminal"),
+    (r"^hemo-keyhelp$", "This key list"),
+    (r"^hemo-ws-rename$", "Rename the current workspace (keeps its number)"),
+    (r"^hemo-vol up", "Volume up"), (r"^hemo-vol down", "Volume down"), (r"^hemo-vol mute", "Mute"),
+    (r"^flameshot gui$", "Screenshot: pick a region"),
+    (r"^shot -s$", "Report screenshot: region, framed, to clipboard"),
+    (r"^shot$", "Report screenshot: active window, framed, to clipboard"),
+    (r"^dunstctl close$", "Dismiss notification"),
+    (r"^dunstctl close-all$", "Dismiss all notifications"),
+    (r"^dunstctl history-pop$", "Bring back last notification"),
+    (r"^hemo-dnd", "Do Not Disturb: pause / resume notifications"),
+    (r"^hemo-caffeine", "Caffeine: keep screen + system awake for long jobs"),
+    (r"^hemo-night", "Night light: warm screen tint toggle"),
+    (r"^hemo-pwsh$", "PowerShell terminal"),
+    (r"^hemo-shotterm$","Screenshot terminal: report colors + its own prompt"),
+    (r"^hemo-report", "Report mode: snap to the team screenshot standard (toggle)"),
+    (r"^fullscreen toggle$", "Fullscreen on/off"),
+    (r"^floating toggle$", "Float / unfloat window"),
+    (r"^focus mode_toggle$", "Focus: floating <-> tiled"),
+    (r"^focus parent$", "Focus parent container"),
+    (r"^focus (left|right|up|down)$", r"Focus \1"),
+    (r"^move (left|right|up|down)$", r"Move window \1"),
+    (r"^split v$", "Next window opens below"),
+    (r"^layout tabbed$", "Tabbed layout"),
+    (r"^layout stacking$", "Stacked layout"),
+    (r"^layout toggle split$", "Split layout (toggle direction)"),
+    (r"^move scratchpad$", "Hide window in scratchpad"),
+    (r"^scratchpad show$", "Show / cycle scratchpad"),
+    (r"^workspace back_and_forth$", "Previous workspace"),
+    (r'^mode "resize', "Resize mode (hjkl / arrows, Esc to leave)"),
+    (r"^move container to workspace number (\d+), workspace number \d+$", r"Move window to workspace \1 and follow"),
+    (r"^move container to workspace (?:number )?(.+)$", r"Move window to workspace \1"),
+    (r"^workspace (?:number )?(.+)$", r"Go to workspace \1"),
+]
+
+
+def pretty_cmd(cmd):
+    cmd = re.sub(r"^exec\s+(--no-startup-id\s+)?", "", cmd).strip().strip('"')
+    # hemo-open is a transparent "focus under pointer before launch" wrapper;
+    # strip it so the regexes below match the real command name.
+    cmd = re.sub(r"^hemo-open\s+", "", cmd)
+    for pat, desc in DESCRIBE:
+        m = re.search(pat, cmd)
+        if m:
+            return m.expand(desc)
+    return cmd
+
+
+rows = []
+variables = {}
+for path in files:
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        continue
+    depth = 0                       # skip bindings inside mode "..." { } blocks
+    desc = ""                       # '# desc: ...' just above a bindsym (custom keys)
+    for raw in lines:
+        line = raw.strip()
+        d = re.match(r"#\s*desc:\s*(.*)", line)
+        if d:
+            desc = d.group(1).strip()
+            continue
+        m = re.match(r"set\s+(\$\w+)\s+(\S+)", line)
+        if m:
+            variables[m.group(1)] = m.group(2)
+        if line.startswith("mode ") and line.endswith("{"):
+            depth += 1
+            continue
+        if line == "}" and depth:
+            depth -= 1
+            continue
+        m = re.match(r"bindsym\s+(?:--\S+\s+)*(\S+)\s+(.+)", line)
+        if m and not depth:
+            rows.append((pretty_keys(m.group(1), variables), m.group(2), desc))
+        if line and not line.startswith("#"):
+            desc = ""
+
+# resolve $ws1 etc. in commands for display
+def show(cmd):
+    for k, v in sorted(variables.items(), key=lambda kv: -len(kv[0])):
+        cmd = cmd.replace(k, v.strip('"'))
+    return pretty_cmd(cmd)
+
+# default=0 so an empty binding set can't raise ValueError on max()
+width = max((len(k) for k, _, _ in rows), default=0) + 2
+menu = "\n".join(f"{k:<{width}}{d or show(c)}" for k, c, d in rows)
+try:
+    res = subprocess.run(
+        ["rofi", "-dmenu", "-i", "-p", "", "-no-custom", "-format", "i",
+         "-kb-custom-1", "Alt+e", "-mesg", "Alt+E: add or edit your own hotkeys",
+         "-theme-str", 'window { width: 760px; } entry { placeholder: "Search keys…"; } listview { lines: 12; }'],
+        input=menu, capture_output=True, text=True)
+    if res.returncode == 10:            # Alt+E (kb-custom-1)
+        subprocess.Popen(["hemo-hotkeys"])
+    elif res.returncode == 0 and res.stdout.strip().isdigit():
+        cmd = rows[int(res.stdout.strip())][1]
+        for k, v in sorted(variables.items(), key=lambda kv: -len(kv[0])):
+            cmd = cmd.replace(k, v)
+        subprocess.run(["i3-msg", "-q", cmd])
+except FileNotFoundError as e:
+    # a required tool (rofi / i3-msg / hemo-hotkeys) isn't installed — don't
+    # dump a traceback; print a clear note instead
+    print(f"hemo-keyhelp: missing command: {e.filename}", file=sys.stderr)

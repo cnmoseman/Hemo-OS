@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hemo Setup
+Comment=First-run setup checklist — roles, appearance, hostname, hardening
+Exec=hemo-welcome --setup
+Icon=applications-system
+Terminal=false
+Categories=System;Settings;
+Keywords=hemo;setup;first run;roles;
+StartupNotify=false

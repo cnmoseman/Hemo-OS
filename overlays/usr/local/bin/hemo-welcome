@@ -1,0 +1,2176 @@
+#!/usr/bin/env python3
+"""hemo-welcome — Hemo OS control center.
+
+A reopenable GTK window that front-ends the hemo-* helpers: a header with the
+lizard mark and live role, a grid of action cards each showing current status,
+and an overview panel with the VPN / internal-IP / egress addresses. Launched from the menu,
+and once per login from the i3 config (`hemo-welcome --autostart`, gated by a
+per-user flag so it stops popping up once you turn it off, without deleting
+itself — the EndeavourOS welcome pattern).
+
+Privileged actions (role install, hardening, GPU, hostname) run via pkexec inside
+a kitty terminal so output streams live and polkit prompts for the password once.
+"""
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk, GLib, Pango, GdkPixbuf, Gio  # noqa: E402
+
+REPO = "https://github.com/cnmoseman/Hemo-OS"
+HOME = os.path.expanduser("~")
+CONF = os.path.join(HOME, ".config/hemo/welcome.conf")
+SELF = subprocess.run(["which", "hemo-welcome"], capture_output=True, text=True).stdout.strip() or os.path.abspath(__file__)
+# Header toad mark, chosen per mode: the brown mark (`hemo-mark-dark.png`) reads
+# on the light-mode surface, the cream mark (`hemo-mark.png`) on dark surfaces.
+# Only `light` is a light surface; kali/black are dark. Falls back to the plymouth
+# logo if the marks aren't installed.
+def logo_candidates():
+    light = _theme_mode() == "light"
+    primary = "hemo-mark-dark.png" if light else "hemo-mark.png"
+    secondary = "hemo-mark.png" if light else "hemo-mark-dark.png"
+    out = []
+    for name in (primary, secondary):
+        out.append(f"/usr/share/hemo/branding/{name}")
+        out.append(os.path.join(HOME, f"Hemo-OS/branding/assets/{name}"))
+    out.append("/usr/share/plymouth/themes/hemo/logo.png")
+    return out
+
+# The "HemoOS" wordmark lettering cut from the logo (transparent, no disc/lizard),
+# chosen per mode: the cream wordmark is white and vanishes on the light sidebar,
+# so light mode uses the dark recolor (`hemo-wordmark-dark.png`).
+def wordmark_candidates():
+    light = _theme_mode() == "light"
+    primary = "hemo-wordmark-dark.png" if light else "hemo-wordmark.png"
+    secondary = "hemo-wordmark.png" if light else "hemo-wordmark-dark.png"
+    out = []
+    for name in (primary, secondary):
+        out.append(f"/usr/share/hemo/branding/{name}")
+        out.append(os.path.join(HOME, f"Hemo-OS/branding/assets/{name}"))
+    return out
+
+def _detect_accent():
+    """The live accent so the welcome's own chrome matches the current theme."""
+    try:
+        t = open(os.path.join(HOME, ".config/gtk-3.0/hemo-accent.css")).read()
+        m = re.search(r"#[0-9a-fA-F]{6}", t)
+        if m:
+            return m.group(0)
+    except Exception:
+        pass
+    return "#c9a37a"
+
+
+ACCENT = _detect_accent()
+# The Hemo brand tan (Saddle dark accent, matches the logo). First-boot setup
+# onboards BEFORE a role/accent is chosen, so its chrome always uses the brand
+# tan rather than whatever accent happens to be applied (e.g. a themed box).
+BRAND_TAN = "#c9a37a"
+NERD = "JetBrainsMono Nerd Font Mono"
+
+# Saddle fallback (if palette.env is missing), matching hemo-role-apply.
+_SADDLE = {
+    "dark":  dict(desk="#14110e", panel="#2c2621", border="#3f372f",
+                  text="#e8dfd4", muted="#a39686", bad="#f08a80"),
+    "light": dict(desk="#d9cfc2", panel="#e8e0d5", border="#cbbfae",
+                  text="#2a241e", muted="#6b6157", bad="#b3261e"),
+    "kali":  dict(desk="#1b1d24", panel="#2d303b", border="#40434f",
+                  text="#ffffff", muted="#a0a3b1", bad="#ff5f5f"),
+    "black": dict(desk="#000000", panel="#141414", border="#2a2a2a",
+                  text="#e6e6e6", muted="#8c8c8c", bad="#f08a80"),
+}
+# Mode choices (id, label) — same set as hemo-role-apply's MODES.
+MODE_CHOICES = (("dark", "Dark"), ("light", "Light"), ("kali", "Kali grey"), ("black", "Black"))
+MODE_IDS = tuple(m for m, _ in MODE_CHOICES)
+# Terminal color schemes (hemo-appearance termcolors / hemo-report TERMCOLORS).
+TERMCOLOR_CHOICES = (("auto", "Match mode"), ("gruvbox", "Gruvbox"), ("kali", "Kali"),
+                     ("dracula", "Dracula"), ("nord", "Nord"), ("solarized", "Solarized"),
+                     ("tokyonight", "Tokyo Night"), ("catppuccin", "Catppuccin"),
+                     ("onedark", "One Dark"))
+# Shell prompt presets (/usr/share/hemo/prompts/<id>.toml), shown in Appearance.
+PROMPT_CHOICES = (("stock", "Stock"), ("oneline", "One line"),
+                  ("kali", "Hemo classic"), ("userhost", "user@host"),
+                  ("engagement", "Engagement (VPN + target)"), ("timestamped", "Timestamped"))
+# A plain-text sample of each prompt, shown as a live preview under the dropdown.
+PROMPT_EXAMPLES = {
+    "stock":       "~/hemo\n❯",
+    "oneline":     "~/hemo ❯",
+    "kali":        "┌──(hemo㉿hemo)-[~/hemo]\n└─$",
+    "userhost":    "hemo@hemo ~/hemo ❯",
+    "engagement":  " 10.10.14.3 → 10.10.11.42 ~/hemo ❯",
+    "timestamped": "[12:21:05] hemo@hemo ~/hemo ❯",
+}
+
+
+def _theme_mode():
+    v = ""
+    try:                                   # rootless user preference wins
+        v = open(os.path.join(HOME, ".config/hemo/mode")).read().strip()
+    except OSError:
+        try:
+            for ln in open("/var/lib/hemo/theme.env"):
+                if ln.startswith("HEMO_MODE="):
+                    v = ln.strip().split("=", 1)[1]
+        except OSError:
+            pass
+    v = str(v).strip().lower()
+    return v if v in MODE_IDS else ("light" if v.startswith("l") else "dark")
+
+
+def _mode_neutrals():
+    """Neutral tokens for the current mode, from palette.env (else Saddle)."""
+    pal = {}
+    try:
+        for ln in open("/usr/share/hemo/palette.env"):
+            s = ln.strip()
+            if s and not s.startswith("#") and "=" in s:
+                k, _, v = s.partition("=")
+                parts = v.split()
+                pal[k.strip()] = parts[0] if parts else ""
+    except OSError:
+        pass
+    mode = _theme_mode()
+    M = mode.upper()
+    return {k: (pal.get(f"HEMO_{M}_{k.upper()}") or _SADDLE[mode][k])
+            for k in ("desk", "panel", "border", "text", "muted", "bad")}
+
+
+def build_css(ACCENT):
+    """The window stylesheet, tinted with the accent and the current mode."""
+    N = _mode_neutrals()
+    return f"""
+window {{ background: {N['desk']}; }}
+.hemo-root {{ padding: 26px; }}
+.title {{ color: {N['text']}; font-size: 22px; font-weight: 800; }}
+.subtitle {{ color: {N['muted']}; font-size: 11px; }}
+.rolename {{ color: {ACCENT}; font-size: 14px; font-weight: 700; }}
+.hrule {{ background: alpha({ACCENT}, 0.22); min-height: 2px; }}
+.card {{
+    background: {N['panel']}; border: 1px solid {N['border']};
+    border-radius: 16px; padding: 18px;
+    transition: background 160ms ease, border-color 160ms ease;
+}}
+.card:hover {{ background: {N['border']}; border-color: {ACCENT}; }}
+.card-ico {{ color: {ACCENT}; font-family: "{NERD}"; font-size: 23px; }}
+.card-title {{ color: {N['text']}; font-size: 15px; font-weight: 700; }}
+.card-desc {{ color: {N['muted']}; font-size: 11px; }}
+.card-status {{ color: {ACCENT}; font-size: 11px; font-weight: 700; }}
+.card-status.dim {{ color: {N['muted']}; }}
+.card-status.warn {{ color: {N['bad']}; }}
+.section {{ color: {ACCENT}; font-size: 11px; font-weight: 800; }}
+.footer {{ color: {N['muted']}; font-size: 11px; }}
+.pill {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 999px; padding: 4px 11px; }}
+.linkbtn {{
+    background: transparent; border: none; color: {N['muted']};
+    font-size: 11px; padding: 3px 10px; box-shadow: none;
+}}
+.linkbtn:hover {{ color: {ACCENT}; }}
+check {{ min-width: 16px; min-height: 16px; }}
+checkbutton {{ color: {N['muted']}; font-size: 11px; }}
+
+/* native inputs (combo selectors, spin buttons, entries): force readable colors
+   in BOTH modes — without this they fall back to the GTK theme and clash */
+entry, spinbutton, combobox button {{
+    background-color: {N['panel']}; color: {N['text']};
+    border: 1px solid {N['border']}; border-radius: 8px; box-shadow: none;
+}}
+entry:focus, spinbutton:focus-within, combobox button:focus {{ border-color: {ACCENT}; }}
+spinbutton text, entry text {{ color: {N['text']}; caret-color: {N['text']}; }}
+spinbutton button {{ background: transparent; color: {N['text']}; border: none; }}
+spinbutton button:hover {{ color: {ACCENT}; }}
+combobox button, combobox button label, combobox cellview, combobox arrow {{ color: {N['text']}; }}
+/* dropdown popups (combo lists, menus, popovers) */
+menu, popover, popover.background, combobox window, combobox window.background,
+window.popup, treeview.view {{
+    background-color: {N['panel']}; color: {N['text']}; border: 1px solid {N['border']};
+}}
+menu menuitem, popover modelbutton, combobox window menuitem,
+combobox cellview, treeview.view cell {{ color: {N['text']}; }}
+menu menuitem:hover, popover modelbutton:hover,
+combobox window menuitem:hover, treeview.view:selected {{
+    background-color: alpha({ACCENT}, 0.25); color: {N['text']};
+}}
+
+/* sidebar settings (--settings) + first-run checklist (--setup) */
+.sidebar {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 14px; }}
+.brandname {{ color: {N['text']}; font-family: "Quicksand", sans-serif; font-size: 24px; font-weight: 700; letter-spacing: 2px; }}
+.navbtn {{ background: transparent; border: none; color: {N['muted']};
+          font-size: 13px; font-weight: 600; padding: 9px 12px; border-radius: 8px; }}
+.navbtn:hover {{ background: {N['border']}; color: {N['text']}; }}
+.bigtitle {{ color: {N['text']}; font-size: 20px; font-weight: 800; }}
+.eyebrow {{ color: {N['muted']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; }}
+.tile {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 12px; padding: 12px 14px; }}
+.mono {{ font-family: "{NERD}"; color: {N['text']}; font-size: 15px; font-weight: 700; }}
+.statuscard {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 12px; }}
+.statusrow {{ border-bottom: 1px solid {N['border']}; padding: 12px 14px; }}
+.steprow {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 12px; padding: 12px 14px; }}
+.steprow.active {{ border-color: {ACCENT}; background: {N['border']}; }}
+.steprow.todo {{ background: transparent; }}
+.stepnum {{ color: {ACCENT}; font-weight: 800; font-size: 13px; }}
+.steptitle {{ color: {N['text']}; font-size: 14px; font-weight: 700; }}
+.stepsub {{ color: {N['muted']}; font-size: 11px; }}
+.tick {{ color: {ACCENT}; font-size: 16px; font-weight: 800; }}
+.progresslbl {{ color: {N['text']}; font-size: 12px; font-weight: 700; }}
+.sidepanel {{ background: {ACCENT}; border-radius: 18px; padding: 34px; }}
+
+/* role selector list: themed rows instead of Adwaita's grey+blue selection */
+.roles-list {{ background: {N['panel']}; border: 1px solid {N['border']}; border-radius: 12px; }}
+.roles-list row {{ border-bottom: 1px solid {N['border']}; }}
+.roles-list row:last-child {{ border-bottom: none; }}
+.roles-list row:hover {{ background: {N['border']}; }}
+.roles-list row:selected {{
+    background: alpha({ACCENT}, 0.22);
+    box-shadow: inset 3px 0 0 {ACCENT};
+}}
+.roles-list row:selected .card-title {{ color: {N['text']}; }}
+.roles-list row:selected .card-desc {{ color: {N['text']}; }}
+.promptpreview {{
+    font-family: "{NERD}"; font-size: 13px;
+    background: {N['panel']}; color: {N['text']};
+    border: 1px solid {N['border']}; border-radius: 8px; padding: 8px 11px;
+}}
+"""
+
+
+# one provider for the whole app; reloaded in place when the accent changes
+CSS_PROVIDER = Gtk.CssProvider()
+
+
+def load_css(accent):
+    CSS_PROVIDER.load_from_data(build_css(accent).encode())
+
+
+def sh(*cmd, timeout=8):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+
+
+def launch(*cmd):
+    """Fire-and-forget a background command from a GTK handler, guarded: a
+    missing tool prints a note instead of throwing an exception into the GLib
+    main loop. Accepts either launch("a", "b") or launch(["a", "b"])."""
+    argv = list(cmd[0]) if len(cmd) == 1 and isinstance(cmd[0], (list, tuple)) else list(cmd)
+    try:
+        subprocess.Popen(argv)
+    except OSError as e:
+        print(f"hemo-welcome: could not launch {argv[0]}: {e}", file=sys.stderr)
+
+
+def role_labels():
+    """slug -> pretty label, from `hemo-pkg list-roles` (e.g. red_team -> Red Team)."""
+    m = {}
+    for ln in sh("hemo-pkg", "list-roles")[1].splitlines():
+        parts = ln.split("\t")
+        if len(parts) >= 2:
+            m[parts[0]] = parts[1]
+    return m
+
+
+def nice_role(slug):
+    """A clean display name even if the role isn't in the manifest."""
+    return role_labels().get(slug) or slug.replace("_", " ").title()
+
+
+def primary_role():
+    _, v = sh("cat", "/var/lib/hemo/primary")
+    return nice_role(v) if v else "none"
+
+
+ROLES_YML = "/usr/share/hemo/manifest/roles.yml"
+FLOWER_DIRS = ["/usr/share/hemo/flowers",
+               os.path.join(HOME, "Hemo-OS/overlays/usr/share/hemo/flowers")]
+
+
+def role_catalog():
+    """[{key,name,desc,accent,flower}] from roles.yml (file order), with a
+    hemo-pkg fallback that has no accent/flower."""
+    try:
+        import yaml
+        d = yaml.safe_load(open(ROLES_YML))
+        out = []
+        for key, r in (d.get("roles") or {}).items():
+            prof = r.get("profile") or {}
+            out.append({"key": key, "name": r.get("label", key),
+                        "desc": r.get("summary", ""),
+                        "accent": prof.get("accent", "#8f9aa3"),
+                        "flower": prof.get("flower", ""),
+                        "choices": r.get("choices") or {}})
+        if out:
+            return out
+    except Exception:
+        pass
+    out = []
+    for ln in sh("hemo-pkg", "list-roles")[1].splitlines():
+        p = ln.split("\t")
+        if len(p) >= 2:
+            out.append({"key": p[0], "name": p[1], "desc": p[2] if len(p) > 2 else "",
+                        "accent": "#8f9aa3", "flower": ""})
+    return out
+
+
+def flower_pixbuf(flower, accent, size):
+    """Load a flower SVG recolored to the role accent, at `size`px."""
+    if not flower:
+        return None
+    for d in FLOWER_DIRS:
+        path = os.path.join(d, flower)
+        if os.path.exists(path):
+            try:
+                svg = open(path).read().replace("currentColor", accent)
+                stream = Gio.MemoryInputStream.new_from_data(svg.encode(), None)
+                return GdkPixbuf.Pixbuf.new_from_stream_at_scale(stream, size, size, True, None)
+            except Exception:
+                return None
+    return None
+
+
+def harden_status():
+    rc, out = sh("hemo-harden", "status")
+    if rc != 0:
+        return ("off", "dim")
+    first = out.splitlines()[0] if out else ""
+    return ("ON — locked down", "warn") if "ROAMING" in first.upper() or "LOCK" in first.upper() else ("off", "dim")
+
+
+def gpu_status():
+    rc, out = sh("hemo-gpu", "detect")
+    return ("none", "dim") if rc != 0 or not out or out == "none" else (out, "")
+
+
+def port_up(port):
+    """True if something is listening on 127.0.0.1:port (fast, no docker call)."""
+    _, out = sh("ss", "-ltn", timeout=3)
+    return f":{port} " in out
+
+
+def services_registry():
+    """The containerized + native daemons the welcome can start.
+
+    Docker services are always listed (core helpers); native daemons appear only
+    when their tool is installed. Status is read from the listening port so the
+    list stays snappy.
+    """
+    svcs = [
+        dict(name="BloodHound CE", desc="AD attack-path graph", port=8080,
+             start=["hemo-bloodhound", "up"], stop=["hemo-bloodhound", "down"],
+             url="http://127.0.0.1:8080/ui/login"),
+        dict(name="Arkime", desc="Full-packet PCAP search", port=8005,
+             start=["hemo-arkime", "up"], stop=["hemo-arkime", "down"],
+             url="http://127.0.0.1:8005/"),
+        dict(name="Log Analytics (hemo-elk)", desc="Kibana/Dashboards for logs", port=5601,
+             start=["hemo-elk", "up"], stop=["hemo-elk", "down"],
+             url="http://127.0.0.1:5601/",
+             hint="OpenSearch + Dashboards by default; `hemo-elk --engine elastic up` for "
+                  "Elasticsearch + Kibana. Ingest EVTX/JSON via the UI upload or "
+                  "`hemo-elk ingest`. Heavy — stop Arkime first (they can't both run)."),
+    ]
+    if shutil.which("hemo-adaptix"):
+        svcs.append(dict(name="AdaptixC2", desc="C2 teamserver (Docker)", port=4321,
+                         start=["hemo-adaptix", "up"], stop=["hemo-adaptix", "down"],
+                         open=["hemo-adaptix", "client"], open_label="Client",
+                         hint="Connect in the client:  host 127.0.0.1 · port 4321 · "
+                              "endpoint /endpoint · password 'pass' (accept the self-signed "
+                              "cert). It is NOT a web page — a browser will 404."))
+    if shutil.which("gvm-start"):
+        svcs.append(dict(name="OpenVAS / GVM", desc="Vulnerability scanner", port=9392,
+                         start=["sudo", "gvm-start"], stop=["sudo", "gvm-stop"],
+                         url="https://127.0.0.1:9392/"))
+    if shutil.which("spiderfoot"):
+        svcs.append(dict(name="SpiderFoot", desc="OSINT automation", port=5001,
+                         start=["spiderfoot", "-l", "127.0.0.1:5001"], stop=None,
+                         url="http://127.0.0.1:5001/"))
+    return svcs
+
+
+def services_summary():
+    svcs = services_registry()
+    running = sum(1 for s in svcs if port_up(s["port"]))
+    return (f"{running} of {len(svcs)} running", "" if running else "dim")
+
+
+def term(title, *cmd):
+    """Run cmd in a floated terminal that auto-closes on success and stays open on
+    failure. On exit 0 it prints a brief banner and closes after a short countdown
+    (kitty runs without --hold, so it exits when the shell does). On a non-zero exit
+    it holds with a `read` so the error stays readable; Super+Shift+Q also closes it.
+
+    Holding-on-error with `read` is reliable because the only focus-stealing step
+    (the role-apply's trailing `i3-msg reload`, run via `__retheme_live`) is chained
+    with `&&` at the call site, so it never runs on failure — keyboard focus stays on
+    this window and Enter reaches it. Floated as `hemo-float` so i3 gives it its own
+    window.
+    """
+    inner = " ".join(cmd)
+    secs = 4
+    done = (
+        inner + "; rc=$?; echo; "
+        "if [ \"$rc\" = 0 ]; then "
+        f"printf '\\033[2m----- done — closing in {secs}s -----\\033[0m\\n'; sleep {secs}; "
+        "else "
+        "printf '\\033[1;31m----- FAILED (rc=%s) — press Enter (or Super+Shift+Q) to close -----\\033[0m\\n' \"$rc\"; "
+        "read _; "
+        "fi"
+    )
+    if subprocess.run(["which", "kitty"], capture_output=True).returncode == 0:
+        launch(["kitty", "--class", "hemo-float", "--title", title,
+                "-e", "sh", "-c", done])
+        return
+    # fallback terminal: same auto-close-on-success / hold-on-error behavior.
+    if subprocess.run(["which", "x-terminal-emulator"], capture_output=True).returncode == 0:
+        launch(["x-terminal-emulator", "-T", title, "-e", "sh", "-c", done])
+        return
+    launch(["sh", "-c", inner])
+
+
+def read_choice(path, default, valid):
+    """First line of a tiny choice file (e.g. ~/.config/hemo/editor), falling
+    back to `default` when absent or not one of `valid`."""
+    try:
+        val = open(path).read().strip()
+    except OSError:
+        return default
+    return val if val in valid else default
+
+
+def current_terminal():
+    """The operator's default terminal: an explicit pick in ~/.config/hemo/terminal
+    wins, else the resolved x-terminal-emulator alternative, else kitty (Hemo's
+    baked default — qterminal is installed on demand)."""
+    pick = read_choice(os.path.join(HOME, ".config/hemo/terminal"), "", {"qterminal", "kitty"})
+    if pick:
+        return pick
+    real = ""
+    xterm = shutil.which("x-terminal-emulator")
+    if xterm:
+        real = os.path.basename(os.path.realpath(xterm))
+    return real if real in ("qterminal", "kitty") else "kitty"
+
+
+def write_user_file(path, value):
+    """Write a one-line user-owned choice file, best effort."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").write(value + "\n")
+    except OSError as e:
+        print(f"hemo-welcome: could not write {path}: {e}", file=sys.stderr)
+
+
+def get_autostart():
+    try:
+        return "disable" if "autostart=disable" in open(CONF).read() else "enable"
+    except OSError:
+        return "enable"
+
+
+def set_autostart(val):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    open(CONF, "w").write(f"autostart={val}\n")
+
+
+# ---- first-run setup state --------------------------------------------------
+SETUP_DONE = os.path.join(HOME, ".config/hemo/setup.done")
+
+
+def setup_done():
+    return os.path.exists(SETUP_DONE)
+
+
+def mark_setup_done():
+    os.makedirs(os.path.dirname(SETUP_DONE), exist_ok=True)
+    open(SETUP_DONE, "w").write("done\n")
+
+
+def _appearance_touched():
+    return (os.path.exists(os.path.join(HOME, ".config/hemo/appearance.conf"))
+            or os.path.exists(os.path.join(HOME, ".config/hemo/mode")))
+
+
+def setup_steps():
+    """The first-run checklist, with each step's done-state from the live box so
+    the ticks and progress bar are real, not stored flags. action = the method
+    name on the window to run; required steps count toward 'ready'."""
+    prim = primary_role()
+    try:
+        host = open("/etc/hostname").read().strip()
+    except OSError:
+        host = ""
+    gpu_name = gpu_status()[0]
+    gpu_ok = gpu_name not in ("none", "")
+    report_custom = os.path.exists(os.path.join(HOME, ".config/hemo/report/profile.env"))
+    apps_done = os.path.exists(os.path.join(HOME, ".config/hemo/terminal"))
+    return [
+        dict(key="apps", required=False, done=apps_done, action="apps_setup", optional=True,
+             title="Apps & tools",
+             sub="Notes, code editor, terminal — keep the defaults or swap them · optional",
+             btn=("Change" if apps_done else "Set up")),
+        dict(key="roles", required=True, done=(prim != "none"), action="pick_roles",
+             title="Choose your roles",
+             sub=(f"{prim} installed" if prim != "none" else "no role installed yet"),
+             btn=("Change" if prim != "none" else "Choose")),
+        dict(key="appearance", required=True, done=_appearance_touched(), action="appearance",
+             title="Make it yours", sub="Main Theme — Mode, Text Size, Colors & Prompt", btn="Open"),
+        dict(key="report", required=False, done=report_custom, action="report_settings",
+             optional=True, title="Screenshot look",
+             sub="the separate theme report mode uses for screenshots · optional", btn="Open"),
+        dict(key="hostname", required=False, done=(host not in ("", "kali", "localhost")),
+             action="hostname", title="Name the box",
+             sub=f"hostname: {host or 'unset'}", btn="Rename"),
+        dict(key="gpu", required=False, done=gpu_ok, action="gpu", optional=True,
+             title="GPU cracking",
+             sub=(gpu_name if gpu_ok else "no passthrough GPU detected") + " · optional", btn="Check"),
+    ]
+
+
+class Welcome(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Hemo Welcome")
+        self.set_default_size(720, 560)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("applications-system")
+
+        self.add(self._mkroot())
+
+    def _raise_trapped_dialogs(self, *args):
+        # i3/tiling WMs often open a modal child dialog WITHOUT focusing it, so
+        # this window stays active and the dialog sits behind it, trapping the app.
+        # When that happens, RAISE the dialog to the front — do NOT dismiss it.
+        # (Dismissing was the old behaviour and it silently cancelled every dialog
+        # in the role-install chain: the parent is active the instant each modal
+        # opens, so the dialog got a DELETE_EVENT and returned None before the user
+        # could answer it.)
+        if not self.is_active():
+            return
+        for w in Gtk.Window.list_toplevels():
+            if (w is not self and w.get_visible() and w.get_modal()
+                    and w.get_transient_for() is self):
+                w.present()
+
+    def _mkroot(self):
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        root.get_style_context().add_class("hemo-root")
+        root.pack_start(self._header(), False, False, 0)
+        rule = Gtk.Box()
+        rule.get_style_context().add_class("hrule")
+        root.pack_start(rule, False, False, 0)
+        root.pack_start(self._cards(), True, True, 0)
+        root.pack_start(self._footer(), False, False, 0)
+        return root
+
+    # ---- header -----------------------------------------------------------
+    def _header(self):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        for path in logo_candidates():
+            if os.path.exists(path):
+                try:
+                    from gi.repository import GdkPixbuf
+                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 56, 56, True)
+                    row.pack_start(Gtk.Image.new_from_pixbuf(pb), False, False, 0)
+                    break
+                except Exception:
+                    pass
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        t = Gtk.Label(label="Hemo OS", xalign=0)
+        t.get_style_context().add_class("title")
+        s = Gtk.Label(label="curated Kali · authorized testing only", xalign=0)
+        s.get_style_context().add_class("subtitle")
+        titles.pack_start(t, False, False, 0)
+        titles.pack_start(s, False, False, 0)
+        row.pack_start(titles, False, False, 0)
+
+        role = Gtk.Label(label=primary_role())
+        role.get_style_context().add_class("rolename")
+        rbox = Gtk.Box()
+        rbox.set_valign(Gtk.Align.CENTER)
+        rbox.pack_end(role, False, False, 0)
+        row.pack_end(rbox, True, True, 0)
+        return row
+
+    # ---- cards ------------------------------------------------------------
+    def _card(self, icon, title, desc, status, cb):
+        card = Gtk.Button()
+        card.get_style_context().add_class("card")
+        card.set_hexpand(True)
+        card.set_vexpand(True)
+        card.connect("clicked", lambda _w: cb())
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
+        # top-align so the icon + title sit at the same spot on every card,
+        # whether or not the card has a status line below
+        inner.set_valign(Gtk.Align.START)
+        ic = Gtk.Label(label=icon, xalign=0)
+        ic.get_style_context().add_class("card-ico")
+        inner.pack_start(ic, False, False, 0)
+        tl = Gtk.Label(label=title, xalign=0)
+        tl.get_style_context().add_class("card-title")
+        inner.pack_start(tl, False, False, 0)
+        dl = Gtk.Label(label=desc, xalign=0, wrap=True)
+        dl.get_style_context().add_class("card-desc")
+        dl.set_line_wrap_mode(Pango.WrapMode.WORD)
+        inner.pack_start(dl, False, False, 0)
+        if status is not None:
+            text, cls = status
+            sl = Gtk.Label(label=text, xalign=0)
+            ctx = sl.get_style_context()
+            ctx.add_class("card-status")
+            if cls:
+                ctx.add_class(cls)
+            inner.pack_start(sl, False, False, 0)
+        card.add(inner)
+        return card
+
+    def _cards(self):
+        grid = Gtk.Grid()
+        grid.set_row_spacing(12)
+        grid.set_column_spacing(12)
+        grid.set_row_homogeneous(True)
+        grid.set_column_homogeneous(True)
+        grid.set_hexpand(True)
+        grid.set_vexpand(True)
+
+        cards = [
+            ("", "Install roles", "Install a role's tools and theme", None, self.pick_roles),
+            ("", "Appearance", "Color, text, windows & wallpaper", (f"accent {self._current_accent()}", ""), self.appearance),
+            ("", "Hardening", "ufw deny-inbound for roaming", harden_status(), self.harden),
+            ("", "Services", "Containers + heavy daemons, idle until used", services_summary(), self.services),
+            ("", "Hostname", "Rename this box", None, self.hostname),
+            ("", "GPU", "Drivers + hashcat acceleration", gpu_status(), self.gpu),
+        ]
+        for i, c in enumerate(cards):
+            grid.attach(self._card(*c), i % 3, i // 3, 1, 1)
+        return grid
+
+    # ---- footer -----------------------------------------------------------
+    def _footer(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        box.pack_start(sep, False, False, 0)
+
+        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        line.get_style_context().add_class("footer")
+
+        self.autostart_chk = Gtk.CheckButton(label="show at login")
+        self.autostart_chk.set_active(get_autostart() == "enable")
+        self.autostart_chk.connect("toggled", self.toggle_autostart)
+
+        hotkeys = Gtk.Button(label="Hotkeys")
+        hotkeys.get_style_context().add_class("linkbtn")
+        hotkeys.set_tooltip_text("See every key binding and record your own")
+        hotkeys.connect("clicked", lambda _w: launch(["hemo-hotkeys"]))
+        docs = Gtk.Button(label="Docs")
+        docs.get_style_context().add_class("linkbtn")
+        docs.connect("clicked", lambda _w: launch(["xdg-open", f"{REPO}/blob/main/RUNBOOK.md"]))
+
+        right = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        right.pack_end(docs, False, False, 0)
+        right.pack_end(hotkeys, False, False, 0)
+        right.pack_end(self.autostart_chk, False, False, 12)
+        line.pack_end(right, True, True, 0)
+        box.pack_start(line, False, False, 0)
+        return box
+
+    # ---- actions ----------------------------------------------------------
+    def _refresh(self):
+        # cheapest way to show new status after an action: rebuild the window
+        GLib.timeout_add(400, self._rebuild)
+
+    def _rebuild(self):
+        for c in self.get_children():
+            self.remove(c)
+        self.add(self._mkroot())
+        self.show_all()
+        return False
+
+    def pick_roles(self):
+        cat = role_catalog()
+        if not cat:
+            self._info("No roles found (is /usr/share/hemo/manifest present?)")
+            return
+        primary = self._role_selector(cat)
+        if not primary:
+            return
+        selected = [primary]
+        # offer to add more roles — their tools install too; the theme stays primary
+        pname = next((c["name"] for c in cat if c["key"] == primary), primary)
+        if self._confirm(f"Set up {pname} as the primary role.\n\n"
+                         f"Add other roles too? Their tools install as well; "
+                         f"{pname} stays the desktop theme."):
+            selected += self._add_roles_dialog(cat, exclude=selected)
+        # prompt any choices (e.g. red_team's C2) for every selected role
+        choose = ""
+        for key in selected:
+            entry = next((c for c in cat if c["key"] == key), {})
+            for cname, c in (entry.get("choices") or {}).items():
+                opts = c.get("options") or []
+                if not opts:
+                    continue
+                sel = self._choose(f"{entry['name']}: {c.get('prompt', 'Choose')}",
+                                   opts, default=c.get("default"))
+                if sel is None:
+                    return  # cancelled
+                choose += f" --choose {cname}={sel}"
+        # If the box is already themed, this is a re-apply: ask which parts of the
+        # primary to apply so a custom Appearance color (or any part) can be kept.
+        # First run (no primary yet) applies the whole profile — the role's
+        # defaults are the starting look.
+        aspect_arg = ""
+        if os.path.exists("/var/lib/hemo/primary"):
+            picked = self._aspect_dialog(pname)
+            if picked is None:
+                return  # cancelled
+            aspect_arg = " --aspects '" + ",".join(picked) + "'"
+
+        # Role switch: if tools are already installed, offer to keep them or prune
+        # the ones that don't belong to the new selection.
+        remove_arg = ""
+        if os.path.exists("/var/lib/hemo/roles"):
+            _, out = sh("hemo-pkg", "prune-candidates", *selected, timeout=20)
+            cands = [t for t in out.splitlines() if t.strip()]
+            if cands:
+                decision = self._keep_tools_dialog(cands, pname)
+                if decision is None:
+                    return  # cancelled
+                if decision:  # non-empty list of tools to REMOVE
+                    remove_arg = " --remove '" + ",".join(decision) + "' --replace-roles"
+
+        # Editors, asked once (first run): the code editor (LazyVim is the default,
+        # VSCodium instead or as well) and the terminal $EDITOR (nano or vim).
+        editor_arg = ""
+        if not os.path.exists("/var/lib/hemo/editor-choice"):
+            code = {"LazyVim (Neovim) — default": "lazyvim",
+                    "VSCodium instead of LazyVim": "vscodium",
+                    "Both LazyVim and VSCodium": "both"}
+            sel = self._choose("Code editor", list(code), default=next(iter(code)),
+                               note="LazyVim is Hemo's code editor. Do you want VSCodium\n"
+                                    "instead, or in addition?")
+            if sel is None:
+                return  # cancelled
+            term_ed = {"nano — default": "nano", "vim (opens Neovim)": "vim"}
+            tsel = self._choose("Terminal editor", list(term_ed), default=next(iter(term_ed)),
+                                note="Used for quick edits, git commits and sudoedit ($EDITOR).")
+            if tsel is None:
+                return  # cancelled
+            editor_arg = f" --editor {code[sel]} --term-editor {term_ed[tsel]}"
+
+        roles_csv = ",".join(selected)
+        term(f"Hemo — building ({roles_csv})",
+             f"pkexec hemo-welcome-apply --roles '{roles_csv}' --primary '{primary}'{choose}{aspect_arg}{remove_arg}{editor_arg} && "
+             f"'{SELF}' __retheme_live")
+        self._refresh()
+
+    def _keep_tools_dialog(self, cands, pname):
+        """Role switch: keep current tools, or choose which to keep. Returns the
+        list of tools to REMOVE ([] = keep everything), or None if cancelled."""
+        n = len(cands)
+        dlg = Gtk.Dialog(title="Keep your current tools?", transient_for=self, modal=True)
+        KEEP_ALL, CHOOSE = 1, 2
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                        "Choose what to keep", CHOOSE,
+                        "Keep all", KEEP_ALL)
+        dlg.set_default_response(KEEP_ALL)
+        area = dlg.get_content_area()
+        area.set_border_width(16); area.set_spacing(10)
+        area.add(Gtk.Label(xalign=0, wrap=True,
+                           label=f"You have {n} tool(s) from your current role(s) that aren't "
+                                 f"part of {pname}.\n\n“Keep all” leaves them installed. "
+                                 f"“Choose what to keep” lets you uninstall the ones you don't "
+                                 f"want — anything you untick will be removed."))
+        dlg.show_all()
+        resp = dlg.run()
+        dlg.destroy()
+        if resp == KEEP_ALL:
+            return []
+        if resp != CHOOSE:
+            return None  # cancel / close
+        # checklist: all ticked = keep; unticked = remove
+        pick = Gtk.Dialog(title="Choose tools to keep", transient_for=self, modal=True)
+        pick.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply", Gtk.ResponseType.OK)
+        pick.set_default_size(480, 520)
+        pick.set_default_response(Gtk.ResponseType.OK)
+        pa = pick.get_content_area(); pa.set_border_width(14); pa.set_spacing(8)
+        pa.add(Gtk.Label(xalign=0, wrap=True,
+                         label="Ticked tools are kept. Untick anything you want uninstalled."))
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        ball = Gtk.Button(label="All"); bnone = Gtk.Button(label="None")
+        bar.pack_start(ball, False, False, 0); bar.pack_start(bnone, False, False, 0)
+        pa.pack_start(bar, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        scroll.add(box); pa.pack_start(scroll, True, True, 0)
+        checks = {}
+        for t in sorted(cands):
+            chk = Gtk.CheckButton(label=t); chk.set_active(True)
+            checks[t] = chk; box.pack_start(chk, False, False, 0)
+        ball.connect("clicked", lambda _b: [c.set_active(True) for c in checks.values()])
+        bnone.connect("clicked", lambda _b: [c.set_active(False) for c in checks.values()])
+        pick.show_all()
+        remove = None
+        if pick.run() == Gtk.ResponseType.OK:
+            remove = [t for t, c in checks.items() if not c.get_active()]
+        pick.destroy()
+        return remove
+
+    def _aspect_dialog(self, pname):
+        """Checklist of which parts of the primary role to apply on a re-theme.
+        Returns the chosen aspect keys, or None if cancelled."""
+        dlg = Gtk.Dialog(title="Apply role", transient_for=self, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply", Gtk.ResponseType.OK)
+        dlg.set_default_size(460, 300)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        area = dlg.get_content_area()
+        area.set_border_width(16)
+        area.set_spacing(10)
+        area.add(Gtk.Label(xalign=0, wrap=True,
+                           label=f"Which parts of {pname} to apply?\n"
+                                 "Unticked parts keep what you have now — e.g. a "
+                                 "custom color you set in Appearance."))
+        aspects = [("color", "Accent color", "bar, borders, rofi, terminal"),
+                   ("wallpaper", "Wallpaper", "desktop background"),
+                   ("bookmarks", "Bookmarks", "Firefox bookmark folders"),
+                   ("icons", "Icons", "folder / app icon color")]
+        checks = {}
+        for key, title, desc in aspects:
+            chk = Gtk.CheckButton()
+            chk.set_active(True)
+            lbl = Gtk.Label(use_markup=True, xalign=0,
+                            label=f"<b>{title}</b>  <span size='small' "
+                                  f"foreground='#a39686'>{GLib.markup_escape_text(desc)}</span>")
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row.pack_start(chk, False, False, 0)
+            row.pack_start(lbl, True, True, 0)
+            evt = Gtk.EventBox()
+            evt.add(row)
+            evt.connect("button-press-event", lambda _w, _e, c=chk: c.set_active(not c.get_active()))
+            area.pack_start(evt, False, False, 0)
+            checks[key] = chk
+        dlg.show_all()
+        picked = None
+        if dlg.run() == Gtk.ResponseType.OK:
+            picked = [k for k, c in checks.items() if c.get_active()]
+        dlg.destroy()
+        if picked is not None and not picked:
+            self._info("Nothing selected — no changes made.")
+            return None
+        return picked
+
+    def _add_roles_dialog(self, cat, exclude):
+        """Checklist of the other roles to also install (tools only)."""
+        dlg = Gtk.Dialog(title="Add roles", transient_for=self, modal=True)
+        dlg.add_buttons("Skip", Gtk.ResponseType.CANCEL, "Add selected", Gtk.ResponseType.OK)
+        dlg.set_default_size(560, 440)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        area = dlg.get_content_area()
+        area.set_border_width(14)
+        area.set_spacing(10)
+        area.add(Gtk.Label(xalign=0, wrap=True,
+                           label="Tick any extra roles to install alongside the primary. "
+                                 "They add tools but don't change the theme."))
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        scroll.add(box)
+        area.pack_start(scroll, True, True, 0)
+        checks = {}
+        for r in cat:
+            if r["key"] in exclude or r["key"] == "full":
+                continue
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            chk = Gtk.CheckButton()
+            checks[r["key"]] = chk
+            row.pack_start(chk, False, False, 0)
+            mini = Gtk.Image()
+            pb = flower_pixbuf(r["flower"], r["accent"], 28)
+            if pb:
+                mini.set_from_pixbuf(pb)
+            row.pack_start(mini, False, False, 0)
+            lbl = Gtk.Label(use_markup=True, xalign=0,
+                            label=f"<b>{GLib.markup_escape_text(r['name'])}</b>  "
+                                  f"<span size='small' foreground='#a39686'>{GLib.markup_escape_text(r['desc'])}</span>")
+            row.pack_start(lbl, True, True, 0)
+            evt = Gtk.EventBox()
+            evt.add(row)
+            evt.connect("button-press-event", lambda _w, _e, c=chk: c.set_active(not c.get_active()))
+            box.pack_start(evt, False, False, 0)
+        dlg.show_all()
+        picked = []
+        if dlg.run() == Gtk.ResponseType.OK:
+            picked = [k for k, c in checks.items() if c.get_active()]
+        dlg.destroy()
+        return picked
+
+    def _role_selector(self, cat):
+        """Live-preview role picker: a big flower bloom that recolors to the
+        selected role's accent, beside the role list; pick one primary."""
+        dlg = Gtk.Dialog(title="Choose your role", transient_for=self, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Set up role", Gtk.ResponseType.OK)
+        dlg.set_default_size(680, 460)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        area = dlg.get_content_area()
+        area.set_border_width(16)
+        area.set_spacing(14)
+        intro = Gtk.Label(xalign=0, wrap=True,
+                          label="Pick a primary role. Its bloom previews the accent color it "
+                                "will theme the desktop with. You can install more or re-theme later.")
+        intro.get_style_context().add_class("card-desc")
+        area.add(intro)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=22)
+        area.pack_start(body, True, True, 0)
+
+        # left: live-preview stage — the flower bloom recolored to the role accent
+        stage = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        stage.set_valign(Gtk.Align.CENTER)
+        stage.set_size_request(240, -1)
+        img = Gtk.Image()
+        name = Gtk.Label()
+        name.get_style_context().add_class("card-title")
+        accent_lbl = Gtk.Label()
+        accent_lbl.get_style_context().add_class("card-desc")
+        stage.pack_start(img, False, False, 0)
+        stage.pack_start(name, False, False, 0)
+        stage.pack_start(accent_lbl, False, False, 0)
+        body.pack_start(stage, False, False, 0)
+
+        # right: scrollable role list
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        lb = Gtk.ListBox()
+        lb.set_selection_mode(Gtk.SelectionMode.BROWSE)
+        lb.get_style_context().add_class("roles-list")
+        scroll.add(lb)
+        body.pack_start(scroll, True, True, 0)
+
+        rows = []
+        for r in cat:
+            row = Gtk.ListBoxRow()
+            hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            hb.set_border_width(7)
+            mini = Gtk.Image()
+            pb = flower_pixbuf(r["flower"], r["accent"], 34)
+            if pb:
+                mini.set_from_pixbuf(pb)
+            hb.pack_start(mini, False, False, 0)
+            meta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            nm = Gtk.Label(label=r["name"], xalign=0)
+            nm.get_style_context().add_class("card-title")
+            ds = Gtk.Label(label=r["desc"], xalign=0, wrap=True)
+            ds.get_style_context().add_class("card-desc")
+            meta.pack_start(nm, False, False, 0)
+            meta.pack_start(ds, False, False, 0)
+            hb.pack_start(meta, True, True, 0)
+            row.add(hb)
+            row._role = r
+            lb.add(row)
+            rows.append(row)
+
+        def on_sel(_lb, row):
+            if not row:
+                return
+            r = row._role
+            pb = flower_pixbuf(r["flower"], r["accent"], 190)
+            if pb:
+                img.set_from_pixbuf(pb)
+            name.set_markup(f"<span foreground='{r['accent']}'>{GLib.markup_escape_text(r['name'])}</span>")
+            accent_lbl.set_markup(
+                f"<span size='small'>accent </span>"
+                f"<span foreground='{r['accent']}' size='small'>{GLib.markup_escape_text(r['accent'])}</span>")
+        lb.connect("row-selected", on_sel)
+
+        dlg.show_all()
+        default = 1 if len(rows) > 1 else 0
+        lb.select_row(rows[default])
+        lb.get_row_at_index(default).grab_focus()
+
+        key = None
+        if dlg.run() == Gtk.ResponseType.OK:
+            sel = lb.get_selected_row()
+            if sel:
+                key = sel._role["key"]
+        dlg.destroy()
+        return key
+
+    def appearance(self):
+        """Appearance panel: accent color, text/window knobs and wallpaper.
+        Not tied to roles — the user picks the color directly."""
+        dlg = Gtk.Dialog(title="Appearance", transient_for=self, modal=True)
+        dlg.set_default_size(560, 600)
+        # Close button: give it breathing room from the dialog edges
+        closeb = dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        closeb.set_margin_top(8)
+        closeb.set_margin_bottom(12)
+        closeb.set_margin_end(14)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_height(440)
+        scroll.set_vexpand(True)   # fill the dialog so there's no dead gap above Close
+        area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        area.set_border_width(14)
+        scroll.add(area)
+        dlg.get_content_area().pack_start(scroll, True, True, 0)
+
+        # --- Color ----------------------------------------------------------
+        area.add(self._section("Color"))
+        area.add(self._hint("Accent for window borders, the bar, menus and the terminal cursor."))
+        crow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        clbl = Gtk.Label(label="Accent color", xalign=0)
+        clbl.set_size_request(120, -1)
+        crow.pack_start(clbl, False, False, 0)
+        # Our own swatch button + chooser (not Gtk.ColorButton) so the chooser's
+        # buttons read Cancel / Apply and Apply changes the accent right away.
+        swatch = Gtk.Box()
+        swatch.set_size_request(44, 22)
+        cbtn = Gtk.Button()
+        cbtn.add(swatch)
+        cbtn.set_tooltip_text("Choose the accent color")
+        self._paint_swatch(swatch, self._current_accent())
+        cbtn.connect("clicked", lambda _w: self._choose_accent(dlg, swatch))
+        crow.pack_start(cbtn, False, False, 0)
+        area.add(crow)
+
+        # Light / dark mode
+        mrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mlbl = Gtk.Label(label="Mode", xalign=0)
+        mlbl.set_size_request(120, -1)
+        mrow.pack_start(mlbl, False, False, 0)
+        mcombo = Gtk.ComboBoxText()
+        for mid, mlabel in MODE_CHOICES:
+            mcombo.append(mid, mlabel)
+        mcombo.set_active_id(self._current_mode())
+        mcombo.connect("changed", lambda c: self._set_mode(c.get_active_id()))
+        mrow.pack_start(mcombo, False, False, 0)
+        area.add(mrow)
+
+        # Wallpaper colors (pywal) — opt-in, overrides the Saddle theme
+        area.add(self._switch_row(
+            "Wallpaper colors", "Derive the whole theme from the wallpaper (pywal). "
+            "Overrides Saddle; no contrast guarantee.",
+            self._pywal_on(),
+            lambda on: sh("hemo-pywal", "on" if on else "off", timeout=180)))
+
+        area.add(Gtk.Separator())
+
+        # --- Text & window knobs --------------------------------------------
+        area.add(self._section("Text & window"))
+        area.add(self._text_size_row(self._appr_cur("text", "11"),
+                 lambda n: launch(["hemo-appearance", "set", "text", str(n)])))
+        area.add(self._combo_row("Auto-lock",
+                 [("5", "5 min"), ("10", "10 min"), ("15", "15 min"),
+                  ("30", "30 min"), ("never", "Never")],
+                 self._appr_cur("lock", "10"), "lock"))
+        area.add(self._combo_row("Window gaps",
+                 [("tight", "Tight"), ("comfortable", "Comfortable"), ("roomy", "Roomy")],
+                 self._appr_cur("gaps", "comfortable"), "gaps"))
+        area.add(self._combo_row("Border width",
+                 [("0", "0 px"), ("2", "2 px"), ("4", "4 px")],
+                 self._appr_cur("border", "2"), "border"))
+        area.add(self._combo_row("Effects",
+                 [("full", "Full"), ("flat", "Flat / fast")],
+                 self._appr_cur("effects", "full"), "effects"))
+        area.add(self._combo_row("Corners",
+                 [("rounded", "Rounded"), ("square", "Square")],
+                 self._appr_cur("corners", "rounded"), "corners"))
+        area.add(self._combo_row("Terminal opacity",
+                 [("100", "100%"), ("95", "95%"), ("90", "90%"), ("85", "85%")],
+                 self._appr_cur("opacity", "100"), "opacity"))
+        area.add(self._term_fg_row(dlg, lambda: self._appr_cur("termfg", "default"),
+                 lambda v: sh("hemo-appearance", "set", "termfg", v, timeout=20)))
+        area.add(self._combo_row("Terminal colors", list(TERMCOLOR_CHOICES),
+                 self._appr_cur("termcolors", "auto"), "termcolors"))
+        area.add(self._prompt_row(self._appr_cur("prompt", "stock")))
+        area.add(self._combo_row("Stamp date",
+                 [("iso", "2026-10-17"),
+                  ("us",  "10/17/2026"),
+                  ("eu",  "17-10-2026"),
+                  ("day", "Sat 2026-10-17"),
+                  ("off", "Off")],
+                 self._appr_cur("date", "iso"), "date"))
+        area.add(self._combo_row("Stamp time",
+                 [("24h",    "18:04:09"),
+                  ("12h",    "06:04:09 PM"),
+                  ("24h-tz", "18:04:09 EDT"),
+                  ("12h-tz", "06:04:09 PM EDT"),
+                  ("off",    "Off")],
+                 self._appr_cur("time", "24h"), "time"))
+        area.add(self._combo_row("Stamp time zone",
+                 [("system", "System"),
+                  ("utc",    "UTC"),
+                  ("est",    "Eastern (US)"),
+                  ("cst",    "Central (US)"),
+                  ("mst",    "Mountain (US)"),
+                  ("pst",    "Pacific (US)"),
+                  ("gmt",    "London / GMT"),
+                  ("cet",    "Central Europe"),
+                  ("jst",    "Japan"),
+                  ("aest",   "Sydney")],
+                 self._appr_cur("tz", "system"), "tz"))
+
+        area.add(Gtk.Separator())
+
+        # --- Wallpaper -------------------------------------------------------
+        area.add(self._section("Wallpaper"))
+        area.add(self._hint("Pick any image (saved to ~/.fehbg, so it sticks).\n"
+                            "'Reset' restores the stock Hemo wallpaper."))
+        wrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        choose = Gtk.Button(label="Choose image…")
+        choose.connect("clicked", lambda _w: self._pick_wallpaper())
+        reset = Gtk.Button(label="Reset to default")
+        reset.connect("clicked", lambda _w: self._set_wallpaper("/usr/share/hemo/wallpapers/hemo-bg.png"))
+        wrow.pack_start(choose, False, False, 0)
+        wrow.pack_start(reset, False, False, 0)
+        area.add(wrow)
+
+        self._wheel_scrolls_panel(area, scroll)
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
+
+    def report_settings(self):
+        """The screenshot (report-mode) look — a separate option from the main
+        theme. Report mode snaps the desktop to this for consistent screenshots."""
+        dlg = Gtk.Dialog(title="Screenshot look", transient_for=self, modal=True)
+        dlg.set_default_size(540, 560)
+        closeb = dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        closeb.set_margin_top(8)
+        closeb.set_margin_bottom(12)
+        closeb.set_margin_end(14)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        area.set_border_width(14)
+        scroll.add(area)
+        dlg.get_content_area().pack_start(scroll, True, True, 0)
+        self._report_section(dlg, area)
+        self._wheel_scrolls_panel(area, scroll)
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
+
+    def _current_mode(self):
+        try:
+            v = open(os.path.join(HOME, ".config/hemo/mode")).read().strip()
+        except OSError:
+            v = sh("sed", "-n", "s/^HEMO_MODE=//p", "/var/lib/hemo/theme.env")[1].strip()
+        return v if v in MODE_IDS else "dark"
+
+    def _set_mode(self, mode):
+        if mode not in MODE_IDS or mode == self._current_mode():
+            return
+        # rootless now (user-owned ~/.config/hemo/mode) — no pkexec, applies live
+        sh("hemo-role-apply", "--mode", mode, timeout=30)
+
+    def _pywal_on(self):
+        return os.path.exists(os.path.join(HOME, ".config/hemo/pywal"))
+
+    def _wheel_scrolls_panel(self, root, scroll):
+        """GTK3 combos and number boxes change value on the mouse wheel, so
+        scrolling the panel with the pointer over one silently re-applies a
+        setting. Make every one under root hand the wheel to the panel instead."""
+        adj = scroll.get_vadjustment()
+
+        def on_wheel(_w, ev):
+            ok, _dx, dy = ev.get_scroll_deltas()
+            if not ok:
+                dy = {Gdk.ScrollDirection.UP: -1, Gdk.ScrollDirection.DOWN: 1}.get(ev.direction, 0)
+            adj.set_value(adj.get_value() + dy * max(adj.get_step_increment(), 40))
+            return True   # the combo never sees it
+
+        def walk(w):
+            if isinstance(w, (Gtk.ComboBox, Gtk.SpinButton)):
+                w.add_events(Gdk.EventMask.SCROLL_MASK)
+                w.connect("scroll-event", on_wheel)
+            if isinstance(w, Gtk.Container):
+                for c in w.get_children():
+                    walk(c)
+        walk(root)
+
+    def _report_on(self):
+        return os.path.exists(os.path.join(HOME, ".config/hemo/report.active"))
+
+    def _report_section(self, dlg, area):
+        """Report mode switch + the look it snaps to. Edits go to the user's own
+        standard (~/.config/hemo/report/, seeded from the shipped one) via
+        `hemo-report put`, which re-applies live while report mode is on."""
+        area.add(self._section("Report mode (screenshots)"))
+        area.add(self._switch_row(
+            "Report mode", "Snap to the team screenshot standard below. $mod+p toggles it too.",
+            self._report_on(),
+            lambda on: sh("hemo-report", "on" if on else "off", timeout=60)))
+        area.add(self._hint("The look report mode switches to. Changes are saved to your\n"
+                            "own copy; 'Reset' goes back to the team default."))
+        rows = (("Mode", "MODE", list(MODE_CHOICES)),
+                ("Terminal opacity", "OPACITY", [("100", "100%"), ("95", "95%"), ("90", "90%"), ("85", "85%")]),
+                ("Window gaps", "GAPS", [("tight", "Tight"), ("comfortable", "Comfortable"), ("roomy", "Roomy")]),
+                ("Border width", "BORDER", [("0", "0 px"), ("2", "2 px"), ("4", "4 px")]),
+                ("Terminal colors", "TERMCOLORS", list(TERMCOLOR_CHOICES)),
+                ("Prompt", "PROMPT", list(PROMPT_CHOICES)))
+        combos = {}
+        for label, key, options in rows:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            lbl = Gtk.Label(label=label, xalign=0)
+            lbl.set_size_request(120, -1)
+            row.pack_start(lbl, False, False, 0)
+            combo = Gtk.ComboBoxText()
+            for oid, otext in options:
+                combo.append(oid, otext)
+            combo._ready = False   # same realize-time "changed" guard as _combo_row
+            combo.connect("changed", lambda c, k=key: launch(
+                ["hemo-report", "put", k, c.get_active_id()])
+                if c._ready and c.get_active_id() else None)
+            row.pack_start(combo, True, True, 0)
+            area.add(row)
+            combos[key] = combo
+
+        tspin = self._text_size_row(sh("hemo-report", "get", "TEXT")[1].strip(),
+                                    lambda n: launch(["hemo-report", "put", "TEXT", str(n)]))
+        area.add(tspin)
+        tfg = self._term_fg_row(dlg, lambda: sh("hemo-report", "get", "TERMFG")[1].strip(),
+                                lambda v: sh("hemo-report", "put", "TERMFG", v, timeout=60))
+        area.add(tfg)
+
+        arow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        albl = Gtk.Label(label="Accent color", xalign=0)
+        albl.set_size_request(120, -1)
+        arow.pack_start(albl, False, False, 0)
+        swatch = Gtk.Box()
+        swatch.set_size_request(44, 22)
+        abtn = Gtk.Button()
+        abtn.add(swatch)
+        abtn.set_tooltip_text("Choose the report accent color")
+        abtn.connect("clicked", lambda _w: self._choose_report_accent(dlg, swatch))
+        arow.pack_start(abtn, False, False, 0)
+        area.add(arow)
+
+        def load():
+            """(Re)read the standard into the widgets without triggering puts."""
+            for key, combo in combos.items():
+                combo._ready = False
+                combo.set_active_id(sh("hemo-report", "get", key)[1].strip())
+            tspin._set_quiet(sh("hemo-report", "get", "TEXT")[1].strip())
+            tfg._refresh()
+            self._paint_swatch(swatch, sh("hemo-report", "get", "ACCENT")[1].strip() or "#c41e2f")
+            GLib.idle_add(lambda: [setattr(c, "_ready", True) for c in combos.values()] and False)
+
+        def after(*cmd):
+            sh(*cmd, timeout=60)
+            load()
+
+        brow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        cap = Gtk.Button(label="Use my current look")
+        cap.set_tooltip_text("Save the desktop's current look as your report standard")
+        cap.connect("clicked", lambda _w: after("hemo-report", "set"))
+        rst = Gtk.Button(label="Reset to team default")
+        rst.connect("clicked", lambda _w: after("hemo-report", "reset"))
+        brow.pack_start(cap, False, False, 0)
+        brow.pack_start(rst, False, False, 0)
+        area.add(brow)
+        load()
+
+    def _choose_report_accent(self, parent, swatch):
+        chooser = Gtk.ColorChooserDialog(title="Report accent color", transient_for=parent, modal=True)
+        chooser.set_use_alpha(False)
+        rgba = Gdk.RGBA()
+        rgba.parse(sh("hemo-report", "get", "ACCENT")[1].strip() or "#c41e2f")
+        chooser.set_rgba(rgba)
+        ok = chooser.get_widget_for_response(Gtk.ResponseType.OK)
+        if ok:
+            ok.set_label("Apply")
+        if chooser.run() == Gtk.ResponseType.OK:
+            c = chooser.get_rgba()
+            hexv = "#%02x%02x%02x" % (round(c.red * 255), round(c.green * 255), round(c.blue * 255))
+            if sh("hemo-report", "put", "ACCENT", hexv, timeout=60)[0] == 0:
+                self._paint_swatch(swatch, hexv)
+        chooser.destroy()
+
+    def _switch_row(self, label, desc, active, on_toggle):
+        """A labelled Gtk.Switch row; on_toggle(bool) runs when the user flips it."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        name = Gtk.Label(label=label, xalign=0)
+        d = Gtk.Label(label=desc, xalign=0, wrap=True)
+        d.get_style_context().add_class("card-desc")
+        txt.pack_start(name, False, False, 0)
+        txt.pack_start(d, False, False, 0)
+        row.pack_start(txt, True, True, 0)
+        sw = Gtk.Switch()
+        sw.set_valign(Gtk.Align.CENTER)
+        sw.set_active(bool(active))
+        sw.connect("state-set", lambda _w, state: (on_toggle(state), False)[1])
+        row.pack_start(sw, False, False, 0)
+        return row
+
+    def _hint(self, text):
+        lbl = Gtk.Label(label=text, xalign=0)
+        lbl.get_style_context().add_class("card-desc")
+        return lbl
+
+    def _combo_row(self, label, options, current, key):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lbl = Gtk.Label(label=label, xalign=0)
+        lbl.set_size_request(120, -1)
+        row.pack_start(lbl, False, False, 0)
+        combo = Gtk.ComboBoxText()
+        ids = [o[0] for o in options]
+        for oid, otext in options:
+            combo.append(oid, otext)
+        combo.set_active_id(current if current in ids else ids[0])
+        # Only apply on a REAL user change. The combo emits a spurious "changed"
+        # when it's first realized; a ready-flag flipped on the idle loop (after
+        # the dialog is shown) skips that so opening the panel never re-applies.
+        combo._ready = False
+        combo.connect("changed", lambda c: launch(
+            ["hemo-appearance", "set", key, c.get_active_id()])
+            if c._ready and c.get_active_id() else None)
+        GLib.idle_add(lambda: (setattr(combo, "_ready", True), False)[1])
+        row.pack_start(combo, True, True, 0)
+        return row
+
+    def _prompt_row(self, current):
+        """'Prompt' dropdown with a live mono preview of the selected prompt below."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lbl = Gtk.Label(label="Prompt", xalign=0)
+        lbl.set_size_request(120, -1)
+        row.pack_start(lbl, False, False, 0)
+        combo = Gtk.ComboBoxText()
+        ids = [o[0] for o in PROMPT_CHOICES]
+        for oid, otext in PROMPT_CHOICES:
+            combo.append(oid, otext)
+        combo.set_active_id(current if current in ids else ids[0])
+        row.pack_start(combo, True, True, 0)
+        box.pack_start(row, False, False, 0)
+
+        prev = Gtk.Label(xalign=0)
+        prev.set_line_wrap(False)
+        prev.get_style_context().add_class("promptpreview")
+        box.pack_start(prev, False, False, 0)
+
+        combo._ready = False
+
+        def changed(c):
+            pid = c.get_active_id()
+            if not pid:
+                return
+            prev.set_text(PROMPT_EXAMPLES.get(pid, ""))
+            if c._ready:
+                launch(["hemo-appearance", "set", "prompt", pid])
+        combo.connect("changed", changed)
+        GLib.idle_add(lambda: (setattr(combo, "_ready", True), False)[1])
+        prev.set_text(PROMPT_EXAMPLES.get(combo.get_active_id() or ids[0], ""))
+        return box
+
+    TEXT_PRESETS = {"small": 10, "medium": 11, "large": 13}
+
+    def _term_fg_row(self, dlg, get, put):
+        """'Terminal text' row: swatch (opens a color chooser) + Default button.
+        get() -> "default" or "#rrggbb"; put(value) applies it."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lbl = Gtk.Label(label="Terminal text", xalign=0)
+        lbl.set_size_request(120, -1)
+        row.pack_start(lbl, False, False, 0)
+        swatch = Gtk.Box()
+        swatch.set_size_request(44, 22)
+        btn = Gtk.Button()
+        btn.add(swatch)
+        btn.set_tooltip_text("Choose the terminal's text color")
+        row.pack_start(btn, False, False, 0)
+        note = Gtk.Label(xalign=0)
+        note.get_style_context().add_class("card-desc")
+        reset = Gtk.Button(label="Default")
+        reset.set_tooltip_text("Use the mode's own text color")
+
+        def refresh():
+            v = get() or "default"
+            self._paint_swatch(swatch, _mode_neutrals()["text"] if v == "default" else v)
+            note.set_text("mode default" if v == "default" else v)
+
+        def choose(_w):
+            ch = Gtk.ColorChooserDialog(title="Terminal text color", transient_for=dlg, modal=True)
+            ch.set_use_alpha(False)
+            rgba = Gdk.RGBA()
+            v = get() or "default"
+            rgba.parse(_mode_neutrals()["text"] if v == "default" else v)
+            ch.set_rgba(rgba)
+            ok = ch.get_widget_for_response(Gtk.ResponseType.OK)
+            if ok:
+                ok.set_label("Apply")
+            if ch.run() == Gtk.ResponseType.OK:
+                c = ch.get_rgba()
+                put("#%02x%02x%02x" % (round(c.red * 255), round(c.green * 255), round(c.blue * 255)))
+                refresh()
+            ch.destroy()
+
+        btn.connect("clicked", choose)
+        reset.connect("clicked", lambda _w: (put("default"), refresh()))
+        row.pack_start(reset, False, False, 0)
+        row.pack_start(note, False, False, 0)
+        row._refresh = refresh
+        refresh()
+        return row
+
+    def _text_size_row(self, current, on_change):
+        """'Text size' row: a number box (terminal font points, 6-32). Calls
+        on_change(n) once the value settles (typing 1-4 shouldn't apply 1 then 14)."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lbl = Gtk.Label(label="Text size", xalign=0)
+        lbl.set_size_request(120, -1)
+        row.pack_start(lbl, False, False, 0)
+        spin = Gtk.SpinButton.new_with_range(6, 32, 1)
+        spin.set_digits(0)
+        spin.set_numeric(True)
+        row.pack_start(spin, False, False, 0)
+        row.pack_start(Gtk.Label(label="pt", xalign=0), False, False, 0)
+        state = {"ready": False, "timer": 0}
+
+        def to_n(v):
+            v = str(v).strip().lower()
+            return self.TEXT_PRESETS.get(v) or (int(v) if v.isdigit() else 11)
+
+        def set_quiet(v):
+            state["ready"] = False
+            spin.set_value(to_n(v))
+            GLib.idle_add(lambda: state.update(ready=True) or False)
+
+        def fire():
+            state["timer"] = 0
+            on_change(spin.get_value_as_int())
+            return False
+
+        def changed(_w):
+            if not state["ready"]:
+                return
+            if state["timer"]:
+                GLib.source_remove(state["timer"])
+            state["timer"] = GLib.timeout_add(600, fire)
+
+        spin.connect("value-changed", changed)
+        set_quiet(current)
+        row._set_quiet = set_quiet
+        return row
+
+    def _appr_cur(self, key, default):
+        v = sh("hemo-appearance", "get", key)[1].strip()
+        return v if v and v != "default" else default
+
+    def _current_accent(self):
+        try:
+            t = open(os.path.join(HOME, ".config/gtk-3.0/hemo-accent.css")).read()
+            m = __import__("re").search(r"#[0-9a-fA-F]{6}", t)
+            if m:
+                return m.group(0)
+        except Exception:
+            pass
+        return ACCENT
+
+    def _paint_swatch(self, swatch, hexv):
+        css = Gtk.CssProvider()
+        css.load_from_data(f"box {{ background: {hexv}; border-radius: 4px; }}".encode())
+        swatch.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _choose_accent(self, parent, swatch):
+        chooser = Gtk.ColorChooserDialog(title="Accent color", transient_for=parent, modal=True)
+        chooser.set_use_alpha(False)
+        rgba = Gdk.RGBA()
+        rgba.parse(self._current_accent())
+        chooser.set_rgba(rgba)
+        ok = chooser.get_widget_for_response(Gtk.ResponseType.OK)
+        if ok:
+            ok.set_label("Apply")
+        if chooser.run() == Gtk.ResponseType.OK:
+            self._apply_accent(chooser.get_rgba(), swatch)
+        chooser.destroy()
+
+    def _apply_accent(self, rgba, swatch):
+        hexv = "#%02x%02x%02x" % (round(rgba.red * 255), round(rgba.green * 255), round(rgba.blue * 255))
+        # user-owned files only, no root: apply in place, no terminal window
+        r = subprocess.run(["hemo-role-apply", "--accent", hexv], capture_output=True)
+        if r.returncode != 0:
+            self._info(f"Couldn't apply {hexv}.")
+            return
+        self._paint_swatch(swatch, hexv)
+        load_css(hexv)   # re-tint this window's icons, role pill and highlights
+        self._refresh()
+
+    def _section(self, text):
+        lbl = Gtk.Label(xalign=0)
+        lbl.set_markup(f"<b>{GLib.markup_escape_text(text)}</b>")
+        return lbl
+
+    def _pick_wallpaper(self):
+        fc = Gtk.FileChooserDialog(title="Choose a wallpaper", transient_for=self,
+                                   action=Gtk.FileChooserAction.OPEN)
+        fc.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Set", Gtk.ResponseType.OK)
+        flt = Gtk.FileFilter()
+        flt.set_name("Images")
+        for mt in ("image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff"):
+            flt.add_mime_type(mt)
+        fc.add_filter(flt)
+        for start in ("/usr/share/hemo/wallpapers", os.path.join(HOME, "Pictures"), HOME):
+            if os.path.isdir(start):
+                fc.set_current_folder(start)
+                break
+        path = fc.get_filename() if fc.run() == Gtk.ResponseType.OK else None
+        fc.destroy()
+        if path:
+            self._set_wallpaper(path)
+
+    def _set_wallpaper(self, path):
+        if not path or not os.path.exists(path):
+            self._info("That image wasn't found.")
+            return
+        # hemo-role-apply frames Hemo art like the role wallpapers (zoomed out on
+        # the tan field) and fills other images; feh writes ~/.fehbg either way,
+        # which the i3 config re-runs at startup
+        r = subprocess.run(["hemo-role-apply", "--wallpaper", path], capture_output=True)
+        if r.returncode == 0 and os.path.exists(os.path.join(HOME, ".config/hemo/pywal")):
+            # wallpaper colors are on: re-derive the theme from the new image
+            subprocess.Popen(["hemo-pywal", "on"], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        self._info("Wallpaper updated." if r.returncode == 0
+                   else "feh couldn't set that image as the wallpaper.")
+
+    def apps_setup(self):
+        """First-run software picks: notes app, code editor, terminal $EDITOR and
+        the default terminal. Baked defaults come pre-ticked; add/remove go through
+        hemo-pkg (never raw apt), removals behind a confirm. The two per-user picks
+        are written to ~/.config/hemo/{editor,terminal}; a terminal switch re-points
+        x-terminal-emulator and reloads i3 so $mod+Return follows it at once."""
+        have_obs = bool(shutil.which("obsidian"))
+        have_cherry = bool(shutil.which("cherrytree"))
+        have_codium = bool(shutil.which("codium"))
+        have_kitty = bool(shutil.which("kitty"))
+        have_qterminal = bool(shutil.which("qterminal"))
+        cur_term = current_terminal()
+        cur_editor = read_choice(os.path.join(HOME, ".config/hemo/editor"), "nano", {"nano", "vim"})
+
+        dlg = Gtk.Dialog(title="Apps & tools", transient_for=self, modal=True)
+        dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Apply", Gtk.ResponseType.OK)
+        dlg.set_default_size(560, -1)
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        area = dlg.get_content_area()
+        area.set_border_width(16)
+        area.set_spacing(4)
+
+        def section(title, sub=""):
+            head = Gtk.Label(xalign=0)
+            head.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
+            head.set_margin_top(12)
+            area.add(head)
+            if sub:
+                s = Gtk.Label(label=sub, xalign=0, wrap=True)
+                s.get_style_context().add_class("card-desc")
+                area.add(s)
+
+        section("Notes", "Where you keep engagement notes. Obsidian is the baked default.")
+        chk_obs = Gtk.CheckButton(label="Obsidian — linked Markdown notes")
+        chk_obs.set_active(have_obs)
+        chk_cherry = Gtk.CheckButton(label="Cherrytree — tree notes, inline screenshots, one-file PDF/HTML")
+        chk_cherry.set_active(have_cherry)
+        area.add(chk_obs)
+        area.add(chk_cherry)
+
+        section("Code editor", "For scripts, exploits and configs.")
+        chk_lazy = Gtk.CheckButton(label="LazyVim (Neovim) — in-terminal · always installed")
+        chk_lazy.set_active(True)
+        chk_lazy.set_sensitive(False)
+        chk_codium = Gtk.CheckButton(label="VSCodium — graphical VS Code, no Microsoft telemetry")
+        chk_codium.set_active(have_codium)
+        area.add(chk_lazy)
+        area.add(chk_codium)
+
+        section("Terminal editor", "Quick edits, git commit messages and sudoedit ($EDITOR).")
+        ed_nano = Gtk.RadioButton.new_with_label_from_widget(None, "nano — simple, shortcuts on screen")
+        ed_vim = Gtk.RadioButton.new_with_label_from_widget(ed_nano, "vim — opens Neovim")
+        (ed_vim if cur_editor == "vim" else ed_nano).set_active(True)
+        area.add(ed_nano)
+        area.add(ed_vim)
+
+        section("Default terminal", "Opens on Super+Return and from the Kali menu.")
+        t_kitty = Gtk.RadioButton.new_with_label_from_widget(
+            None, "kitty — Hemo's default (GPU-drawn, also the screenshot terminal)")
+        t_qt = Gtk.RadioButton.new_with_label_from_widget(
+            t_kitty, "QTerminal — Kali's terminal · installs on demand, replaces kitty")
+        (t_qt if cur_term == "qterminal" else t_kitty).set_active(True)
+        area.add(t_kitty)
+        area.add(t_qt)
+
+        dlg.show_all()
+        if dlg.run() != Gtk.ResponseType.OK:
+            dlg.destroy()
+            return
+        want_obs = chk_obs.get_active()
+        want_cherry = chk_cherry.get_active()
+        want_codium = chk_codium.get_active()
+        new_editor = "vim" if ed_vim.get_active() else "nano"
+        new_term = "qterminal" if t_qt.get_active() else "kitty"
+        dlg.destroy()
+
+        install, remove = [], []
+        for name, want, have in (("obsidian", want_obs, have_obs),
+                                 ("cherrytree", want_cherry, have_cherry),
+                                 ("vscodium", want_codium, have_codium)):
+            if want and not have:
+                install.append(name)
+            elif have and not want:
+                remove.append(name)
+
+        # terminals are mutually exclusive: install the chosen one, remove the other.
+        term_changed = new_term != cur_term
+        old_term = "kitty" if new_term == "qterminal" else "qterminal"
+        have_term = {"kitty": have_kitty, "qterminal": have_qterminal}
+        term_install = new_term if (term_changed and not have_term[new_term]) else None
+        term_remove = old_term if (term_changed and have_term[old_term]) else None
+
+        rem = remove + ([term_remove] if term_remove else [])
+        if rem and not self._confirm(
+                "Remove " + ", ".join(rem) + "?\n\n"
+                "This uninstalls the package (hemo-pkg remove). You can add it "
+                "back here any time."):
+            return
+
+        # per-user choice files (no root needed; read by ~/.zshrc and hemo-shotterm)
+        write_user_file(os.path.join(HOME, ".config/hemo/editor"), new_editor)
+        write_user_file(os.path.join(HOME, ".config/hemo/terminal"), new_term)
+
+        steps = []
+        # install FIRST, so a newly chosen terminal exists before we switch to it and
+        # before we remove the old one — there is never a moment with no terminal.
+        inst = install + ([term_install] if term_install else [])
+        if inst:
+            steps.append("hemo-pkg install " + " ".join(inst))
+        if term_changed:
+            npath = "/usr/bin/" + new_term
+            steps.append("update-alternatives --install /usr/bin/x-terminal-emulator "
+                         f"x-terminal-emulator {npath} 40")
+            steps.append(f"update-alternatives --set x-terminal-emulator {npath}")
+        # removals AFTER the switch
+        if rem:
+            steps.append("hemo-pkg remove " + " ".join(rem))
+        if term_remove:
+            steps.append("update-alternatives --remove x-terminal-emulator "
+                         f"/usr/bin/{term_remove}")
+        if install or remove:
+            # record the code-editor / notes choice so a re-provision and the role
+            # step treat the selection as made (they key off /var/lib/hemo/*-choice)
+            code = "both" if want_codium else "lazyvim"
+            notes = ("both" if want_obs and want_cherry
+                     else "obsidian" if want_obs
+                     else "cherrytree" if want_cherry else "none")
+            steps.append(f"echo {code} > /var/lib/hemo/editor-choice")
+            steps.append(f"echo {notes} > /var/lib/hemo/notes-choice")
+
+        if steps:
+            term("Hemo — apps & tools", "pkexec sh -c " + shlex.quote("; ".join(steps)))
+        if term_changed:
+            # i3's $mod+Return execs x-terminal-emulator; the symlink swap already
+            # takes effect, but reload so launcher pins / the menu follow immediately
+            GLib.timeout_add(1500, lambda: (launch(["i3-msg", "reload"]) or False))
+        self._refresh()
+
+    def harden(self):
+        choice = self._choose("Roaming hardening", ["off", "on"],
+                              note="OFF for ops (callbacks); ON on untrusted networks.")
+        if choice:
+            term(f"Hemo — hardening {choice}", f"pkexec hemo-harden {choice}")
+            self._refresh()
+
+    def services(self):
+        dlg = Gtk.Dialog(title="Services", transient_for=self, modal=True)
+        dlg.add_button("Close", Gtk.ResponseType.CLOSE)
+        dlg.set_default_size(560, 360)
+        area = dlg.get_content_area()
+        area.set_border_width(12)
+        area.set_spacing(10)
+        area.add(Gtk.Label(
+            label="Heavy services run as containers or daemons, idle until started.\n"
+                  "The first start of a container pulls its images — be patient.",
+            xalign=0))
+        for svc in services_registry():
+            up = port_up(svc["port"])
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            name = Gtk.Label(use_markup=True, xalign=0)
+            dot = "#74a56e" if up else "#a39686"
+            state = "running" if up else "stopped"
+            name.set_markup(f"<b>{GLib.markup_escape_text(svc['name'])}</b>  "
+                            f"<span foreground='{dot}' size='small'>● {state}</span>")
+            desc = Gtk.Label(label=svc["desc"], xalign=0)
+            desc.get_style_context().add_class("card-desc")
+            info.pack_start(name, False, False, 0)
+            info.pack_start(desc, False, False, 0)
+            row.pack_start(info, True, True, 0)
+
+            btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            if up:
+                openb = Gtk.Button(label=svc.get("open_label", "Open"))
+                if svc.get("hint"):
+                    openb.set_tooltip_text(svc["hint"])
+                opencmd = svc.get("open") or (["xdg-open", svc["url"]] if svc.get("url") else None)
+                if opencmd:
+                    openb.connect("clicked", lambda _w, c=opencmd: launch(c))
+                    btns.pack_start(openb, False, False, 0)
+                if svc["stop"]:
+                    stopb = Gtk.Button(label="Stop")
+                    stopb.connect("clicked", lambda _w, s=svc: self._svc_action(dlg, s, s["stop"]))
+                    btns.pack_start(stopb, False, False, 0)
+            else:
+                startb = Gtk.Button(label="Start")
+                startb.get_style_context().add_class("suggested-action")
+                startb.connect("clicked", lambda _w, s=svc: self._svc_action(dlg, s, s["start"]))
+                btns.pack_start(startb, False, False, 0)
+            row.pack_end(btns, False, False, 0)
+            area.add(row)
+            area.add(Gtk.Separator())
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
+
+    def _svc_action(self, dlg, svc, cmd):
+        term(f"{svc['name']} — {cmd[-1] if cmd else ''}", *cmd)
+        dlg.response(Gtk.ResponseType.CLOSE)
+        self._refresh()
+
+    def hostname(self):
+        cur = sh("cat", "/etc/hostname")[1]
+        new = self._entry("Set hostname", "New hostname:", cur)
+        if new and new != cur:
+            term("Hemo — hostname", f"pkexec hostnamectl set-hostname '{new}'")
+
+    def gpu(self):
+        name = gpu_status()[0]
+        if name in ("none",):
+            self._info("No discrete GPU detected — CPU only.\nGPU passthrough needs KVM or bare metal.")
+            return
+        if self._confirm(f"Detected: {name}\n\nInstall drivers + enable hashcat GPU? (reboot after)"):
+            term("Hemo — GPU enable", "pkexec hemo-gpu enable")
+
+    def toggle_autostart(self, chk):
+        set_autostart("enable" if chk.get_active() else "disable")
+
+    # ---- small dialogs ----------------------------------------------------
+    def _info(self, msg):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, buttons=Gtk.ButtonsType.OK, text=msg)
+        d.run()
+        d.destroy()
+
+    def _confirm(self, msg):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, buttons=Gtk.ButtonsType.OK_CANCEL, text=msg)
+        ok = d.run() == Gtk.ResponseType.OK
+        d.destroy()
+        return ok
+
+    def _entry(self, title, label, default=""):
+        d = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+        area = d.get_content_area()
+        area.set_border_width(12)
+        area.set_spacing(8)
+        area.add(Gtk.Label(label=label, xalign=0))
+        entry = Gtk.Entry(text=default, activates_default=True)
+        area.add(entry)
+        d.set_default_response(Gtk.ResponseType.OK)
+        d.show_all()
+        val = entry.get_text().strip() if d.run() == Gtk.ResponseType.OK else ""
+        d.destroy()
+        return val
+
+    def _choose(self, title, options, note="", default=None):
+        d = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "OK", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        area = d.get_content_area()
+        area.set_border_width(12)
+        area.set_spacing(6)
+        if note:
+            area.add(Gtk.Label(label=note, xalign=0))
+        group = None
+        radios = {}
+        for o in options:
+            rb = Gtk.RadioButton.new_with_label_from_widget(group, o)
+            if group is None:
+                group = rb
+            radios[o] = rb
+            if o == default:
+                rb.set_active(True)
+            area.add(rb)
+        d.show_all()
+        val = next((o for o, rb in radios.items() if rb.get_active()), None) if d.run() == Gtk.ResponseType.OK else None
+        d.destroy()
+        return val
+
+
+def _wordmark_pixbuf(height):
+    """The 'HemoOS' wordmark lettering, scaled to `height`px (aspect preserved)."""
+    for p in wordmark_candidates():
+        if os.path.exists(p):
+            try:
+                return GdkPixbuf.Pixbuf.new_from_file_at_scale(p, height * 8, height, True)
+            except Exception:
+                pass
+    return None
+
+
+def _logo_pixbuf(size, square=True):
+    paths = (["/usr/share/hemo/branding/hemo-head.png",
+              "/usr/share/hemo/branding/hemo-login.png"] + logo_candidates()
+             if square else
+             ["/usr/share/hemo/branding/hemo-login.png",
+              "/usr/share/hemo/branding/hemo-head.png"] + logo_candidates())
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                return GdkPixbuf.Pixbuf.new_from_file_at_scale(p, size, size, True)
+            except Exception:
+                pass
+    return None
+
+
+class SetupWindow(Welcome):
+    """First-run setup: the option-B checklist. Reuses Welcome's action methods;
+    only the layout differs. Keeps re-opening at login until 'Finish'."""
+
+    def __init__(self):
+        Gtk.Window.__init__(self, title="Hemo Setup")
+        self.set_wmclass("hemo-welcome", "hemo-welcome")
+        self.set_default_size(920, 600)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("applications-system")
+        self.connect("notify::is-active", self._raise_trapped_dialogs)
+        self.add(self._mkroot())
+
+    def _mkroot(self):
+        steps = setup_steps()
+        ready = all(s["done"] for s in steps if s["required"])
+
+        root = Gtk.Grid()
+        root.set_vexpand(True)
+        root.set_hexpand(True)
+        root.set_valign(Gtk.Align.FILL)
+
+        # left: brand panel in the accent color
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        side.get_style_context().add_class("sidepanel")
+        side.set_size_request(300, -1)
+        # inner padding comes from CSS (.sidepanel) so the red background fills the
+        # whole margin-inset cell; set_border_width would inset the background too.
+        # top/bottom margins = main's content inset (26) so the panel's top lines up
+        # with the first step box and its bottom with the Finish button row
+        side.set_margin_top(26)
+        side.set_margin_bottom(26)
+        side.set_margin_start(22)
+        side.set_vexpand(True)
+        side.set_valign(Gtk.Align.FILL)
+        pb = _logo_pixbuf(240, square=False)
+        if pb:
+            side.pack_start(Gtk.Image.new_from_pixbuf(pb), False, False, 0)
+        head = Gtk.Label(xalign=0, wrap=True)
+        head.set_markup("<span foreground='#f5f0e8' size='xx-large' weight='heavy'>"
+                        "Let’s get this\nbox ready</span>")
+        side.pack_start(head, False, False, 0)
+        sub = Gtk.Label(xalign=0, wrap=True)
+        sub.set_markup("<span foreground='#f5f0e8'>A few steps after first boot. Skip "
+                       "anything — everything stays changeable later in Hemo Settings "
+                       "(app menu, or Super+D).</span>")
+        side.pack_start(sub, False, False, 0)
+        spacer = Gtk.Box()
+        side.pack_start(spacer, True, True, 0)
+        root.attach(side, 0, 0, 1, 1)
+
+        # right: the checklist
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        main.set_border_width(26)
+        main.set_hexpand(True)
+        main.set_vexpand(True)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        steplist = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        scroll.add(steplist)
+        main.pack_start(scroll, True, True, 0)
+
+        next_todo = next((i for i, s in enumerate(steps) if not s["done"]), None)
+        for i, s in enumerate(steps):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+            ctx = row.get_style_context()
+            ctx.add_class("steprow")
+            if s["done"]:
+                pass
+            elif i == next_todo:
+                ctx.add_class("active")
+            else:
+                ctx.add_class("todo")
+            mark = Gtk.Label()
+            if s["done"]:
+                # the ✓ is styled by the `.tick` CSS rule via the style class, not
+                # Pango markup — `<span class=…>` is invalid Pango and warned +
+                # dropped the glyph ("Failed to set text … markup").
+                mark.set_text("✓")
+                mark.get_style_context().add_class("tick")
+            else:
+                mark.set_text(str(i + 1))
+                mark.get_style_context().add_class("stepnum")
+            mark.set_size_request(24, -1)
+            row.pack_start(mark, False, False, 0)
+            meta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            tl = Gtk.Label(label=s["title"], xalign=0)
+            tl.get_style_context().add_class("steptitle")
+            sl = Gtk.Label(label=s["sub"], xalign=0)
+            sl.get_style_context().add_class("stepsub")
+            meta.pack_start(tl, False, False, 0)
+            meta.pack_start(sl, False, False, 0)
+            row.pack_start(meta, True, True, 0)
+            btn = Gtk.Button(label=s["btn"])
+            if i == next_todo:
+                btn.get_style_context().add_class("suggested-action")
+            btn.connect("clicked", lambda _w, a=s["action"]: getattr(self, a)())
+            row.pack_end(btn, False, False, 0)
+            steplist.pack_start(row, False, False, 0)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        hint = Gtk.Label(label="Super+/ shows every hotkey", xalign=0)
+        hint.get_style_context().add_class("footer")
+        footer.pack_start(hint, True, True, 0)
+        skip = Gtk.Button(label="Skip for now")
+        skip.connect("clicked", lambda _w: self.destroy())
+        finish = Gtk.Button(label="Finish")
+        if ready:
+            finish.get_style_context().add_class("suggested-action")
+        finish.set_tooltip_text("Stop showing setup at login. Reopen settings any time "
+                                "from the bar’s toad icon.")
+        finish.connect("clicked", self._finish)
+        footer.pack_end(finish, False, False, 0)
+        footer.pack_end(skip, False, False, 0)
+        main.pack_start(footer, False, False, 0)
+
+        root.attach(main, 1, 0, 1, 1)
+        return root
+
+    def _finish(self, _w):
+        mark_setup_done()
+        self.destroy()
+
+
+class SettingsWindow(Welcome):
+    """Post-setup settings app: a sidebar (Mission Control). Reuses Welcome's
+    action methods; the overview shows live status with inline buttons."""
+
+    def __init__(self):
+        Gtk.Window.__init__(self, title="Hemo Settings")
+        self.set_wmclass("hemo-welcome", "hemo-welcome")
+        self.set_default_size(880, 580)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("applications-system")
+        self.connect("notify::is-active", self._raise_trapped_dialogs)
+        self.add(self._mkroot())
+
+    def _mkroot(self):
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        root.pack_start(self._sidebar(), False, False, 0)
+        root.pack_start(self._overview(), True, True, 0)
+        return root
+
+    def _sidebar(self):
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        side.get_style_context().add_class("sidebar")
+        side.set_size_request(220, -1)
+        side.set_border_width(16)
+        # inset so the rounded corners sit on the window background
+        side.set_margin_top(12)
+        side.set_margin_bottom(12)
+        side.set_margin_start(12)
+
+        # Brand = the "HemoOS" wordmark lettering cut from the logo; no lizard, no
+        # text label, so the font is exactly the official logo's.
+        brand = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        brand.set_margin_top(18)
+        # bottom = top + border(16) so the banner sits centered between the
+        # sidebar top edge and the first nav item (Roles & tools)
+        brand.set_margin_bottom(24)
+        brand.set_margin_start(6)
+        pb = _wordmark_pixbuf(34)
+        if pb:
+            img = Gtk.Image.new_from_pixbuf(pb)
+            img.set_halign(Gtk.Align.START)
+            brand.pack_start(img, False, False, 0)
+        else:
+            nm = Gtk.Label(label="HemoOS", xalign=0)
+            nm.get_style_context().add_class("brandname")
+            brand.pack_start(nm, False, False, 0)
+        side.pack_start(brand, False, False, 0)
+
+        nav = [("Roles & tools", "pick_roles"), ("Apps & tools", "apps_setup"),
+               ("Appearance", "appearance"),
+               ("Screenshot look", "report_settings"),
+               ("Services", "services"), ("Hostname", "hostname"), ("GPU", "gpu"),
+               ("Hotkeys", "_open_hotkeys"), ("Docs", "_open_docs")]
+        for label, action in nav:
+            b = Gtk.Button(label=label)
+            b.get_style_context().add_class("navbtn")
+            b.set_relief(Gtk.ReliefStyle.NONE)
+            child = b.get_child()
+            if child:
+                child.set_xalign(0)
+            b.connect("clicked", lambda _w, a=action: getattr(self, a)())
+            side.pack_start(b, False, False, 0)
+
+        rerun = Gtk.Button(label="Run setup again")
+        rerun.get_style_context().add_class("navbtn")
+        rerun.set_relief(Gtk.ReliefStyle.NONE)
+        rerun.get_child().set_xalign(0)
+        rerun.connect("clicked", lambda _w: self._open_setup())
+        side.pack_start(rerun, False, False, 0)
+        return side
+
+    def _overview(self):
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        main.set_border_width(26)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        tbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        eb = Gtk.Label(label="OVERVIEW", xalign=0)
+        eb.get_style_context().add_class("eyebrow")
+        h1 = Gtk.Label(label="Settings", xalign=0)
+        h1.get_style_context().add_class("bigtitle")
+        tbox.pack_start(eb, False, False, 0)
+        tbox.pack_start(h1, False, False, 0)
+        top.pack_start(tbox, True, True, 0)
+        pill = Gtk.Label(label=primary_role())
+        pill.get_style_context().add_class("rolename")
+        top.pack_end(pill, False, False, 0)
+        main.pack_start(top, False, False, 0)
+
+        # engagement tiles
+        tiles = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, homogeneous=True)
+        for title, val in (("VPN (tun0)", sh("hemo-bar-ip", "vpn", timeout=3)[1] or "—"),
+                           ("Internal IP", sh("hemo-bar-ip", "lan", timeout=3)[1] or "—"),
+                           ("Public egress", sh("hemo-bar-ip", "egress", timeout=4)[1] or "—")):
+            t = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            t.get_style_context().add_class("tile")
+            lab = Gtk.Label(label=title, xalign=0)
+            lab.get_style_context().add_class("stepsub")
+            v = Gtk.Label(label=val, xalign=0)
+            v.get_style_context().add_class("mono")
+            t.pack_start(lab, False, False, 0)
+            t.pack_start(v, False, False, 0)
+            tiles.pack_start(t, True, True, 0)
+        main.pack_start(tiles, False, False, 0)
+
+        # status card
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.get_style_context().add_class("statuscard")
+        sv_text, sv_cls = services_summary()
+        report = "On — team standard" if self._report_on() else "Personal look"
+        rows = [
+            ("Services", "containers + heavy daemons, idle until used", sv_text, sv_cls, "Manage", "services"),
+            ("Report mode", "team screenshot standard · Super+P", report, "", "Toggle", "_toggle_report"),
+        ]
+        for i, (title, sub, badge, cls, btn, action) in enumerate(rows):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            rc = row.get_style_context()
+            rc.add_class("statusrow")
+            info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            tl = Gtk.Label(label=title, xalign=0)
+            tl.get_style_context().add_class("steptitle")
+            sl = Gtk.Label(label=sub, xalign=0)
+            sl.get_style_context().add_class("stepsub")
+            info.pack_start(tl, False, False, 0)
+            info.pack_start(sl, False, False, 0)
+            row.pack_start(info, True, True, 0)
+            bl = Gtk.Label(label=badge)
+            bl.get_style_context().add_class("card-status")
+            if cls:
+                bl.get_style_context().add_class(cls)
+            row.pack_start(bl, False, False, 0)
+            b = Gtk.Button(label=btn)
+            b.connect("clicked", lambda _w, a=action: getattr(self, a)())
+            row.pack_start(b, False, False, 0)
+            card.pack_start(row, False, False, 0)
+        main.pack_start(card, False, False, 0)
+
+        foot = Gtk.Label(label="Super+/ hotkeys · Super+D apps · authorized testing only", xalign=0)
+        foot.get_style_context().add_class("footer")
+        main.pack_start(foot, False, False, 0)
+        return main
+
+    def _open_hotkeys(self):
+        launch(["hemo-hotkeys"])
+
+    def _open_docs(self):
+        launch(["xdg-open", f"{REPO}/blob/main/RUNBOOK.md"])
+
+    def _toggle_report(self):
+        sh("hemo-report", "toggle", timeout=60)
+        self._refresh()
+
+    def _open_setup(self):
+        win = SetupWindow()
+        win.show_all()
+
+
+def retheme_live():
+    """Run as the user after a root theme change — only inside i3."""
+    if sh("pgrep", "-x", "-u", str(os.getuid()), "i3")[0] != 0:
+        return
+    fehbg = os.path.join(HOME, ".fehbg")
+    if os.access(fehbg, os.X_OK):
+        subprocess.run([fehbg])
+    subprocess.run(["i3-msg", "reload"], capture_output=True)
+    # let the i3 reload settle before touching polybar — restarting it mid-reload
+    # races the i3 IPC and the bar can exit instead of coming back
+    time.sleep(0.5)
+    subprocess.run(["killall", "-q", "polybar"])
+    for _ in range(20):  # wait for the old bar to actually exit
+        if subprocess.run(["pgrep", "-x", "polybar"], capture_output=True).returncode != 0:
+            break
+        time.sleep(0.1)
+    try:
+        subprocess.Popen(["setsid", "polybar", "main"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        print(f"hemo-welcome: could not launch polybar: {e}", file=sys.stderr)
+
+
+def open_window(kind="settings"):
+    load_css(BRAND_TAN if kind == "setup" else ACCENT)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), CSS_PROVIDER, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    win = SetupWindow() if kind == "setup" else SettingsWindow()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    if arg == "__retheme_live":
+        retheme_live()
+    elif arg == "--enable":
+        set_autostart("enable")
+    elif arg == "--disable":
+        set_autostart("disable")
+    elif arg == "--autostart":
+        # first-run setup keeps opening at login until Finish; after that, nothing
+        if not setup_done() and get_autostart() != "disable":
+            open_window("setup")
+    elif arg == "--setup":
+        open_window("setup")
+    elif arg in ("", "--settings"):
+        open_window("settings")
+    elif arg == "--force":
+        open_window("setup" if not setup_done() else "settings")
+    else:
+        print("usage: hemo-welcome [--autostart|--setup|--settings|--force|--enable|--disable]")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""hemo-hotkeys — the one place to see every key binding and record your own
+(Welcome ▸ Hotkeys, the sidebar "Hotkeys", or Alt+E in the $mod+/ key list).
+
+One window: search the full list of bindings (yours + built-in), and record a
+new hotkey by pressing the keys. Your hotkeys live in
+~/.config/i3/config.d/hemo-custom-keys.conf (the i3 config includes
+config.d/*.conf); built-in bindings are shown read-only so you can see what is
+taken. A combo already in use is refused, every save is checked with `i3 -C`
+and rolled back if i3 rejects it, then i3 reloads.
+"""
+import glob
+import os
+import re
+import subprocess
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk  # noqa: E402
+
+I3 = os.path.expanduser("~/.config/i3")
+MAIN = os.path.join(I3, "config")
+CUSTOM = os.path.join(I3, "config.d", "hemo-custom-keys.conf")
+ACCENT_CSS = os.path.expanduser("~/.config/gtk-3.0/hemo-accent.css")
+HEADER = ("# Hemo custom hotkeys — managed by hemo-hotkeys (Welcome ▸ Hotkeys).\n"
+          "# Each hotkey: an optional '# desc: ...' line, then its bindsym.\n")
+
+MODNAMES = {"mod4": "Super", "mod1": "Alt", "ctrl": "Ctrl", "control": "Ctrl", "shift": "Shift"}
+MODIFIER_KEYS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+                 "Super_L", "Super_R", "Meta_L", "Meta_R", "ISO_Level3_Shift", "Hyper_L", "Hyper_R"}
+# keysym of a held modifier -> how it reads live while recording
+HELD_LABEL = {"Super_L": "Super", "Super_R": "Super", "Meta_L": "Super", "Meta_R": "Super",
+              "Hyper_L": "Super", "Hyper_R": "Super", "Control_L": "Ctrl", "Control_R": "Ctrl",
+              "Alt_L": "Alt", "Alt_R": "Alt", "Shift_L": "Shift", "Shift_R": "Shift"}
+HELD_ORDER = ["Super", "Ctrl", "Alt", "Shift"]
+
+
+# ---------------------------------------------------------------- parsing
+def read_variables():
+    v = {}
+    for path in [MAIN] + sorted(glob.glob(os.path.join(I3, "config.d", "*.conf"))):
+        try:
+            for ln in open(path, encoding="utf-8"):
+                m = re.match(r"\s*set\s+(\$\w+)\s+(\S+)", ln)
+                if m:
+                    v[m.group(1)] = m.group(2)
+        except OSError:
+            pass
+    return v
+
+
+def norm(combo, variables):
+    """Canonical form for comparing combos: sorted lowercase modifiers + key."""
+    for k, val in sorted(variables.items(), key=lambda kv: -len(kv[0])):
+        combo = combo.replace(k, val)
+    parts = [p.lower() for p in combo.split("+")]
+    mods = sorted("ctrl" if p == "control" else p for p in parts[:-1])
+    return "+".join(mods + [parts[-1]])
+
+
+def pretty(combo, variables):
+    for k, val in sorted(variables.items(), key=lambda kv: -len(kv[0])):
+        combo = combo.replace(k, val)
+    out = []
+    for p in combo.split("+"):
+        p = MODNAMES.get(p.lower(), p)
+        out.append(p.upper() if len(p) == 1 else p)
+    return "+".join(out)
+
+
+def parse(path):
+    """[(combo, command, desc)] for top-level bindsyms in one file."""
+    rows, desc, depth = [], "", 0
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        return rows
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("mode ") and line.endswith("{"):
+            depth += 1
+            continue
+        if line == "}" and depth:
+            depth -= 1
+            continue
+        m = re.match(r"#\s*desc:\s*(.*)", line)
+        if m:
+            desc = m.group(1).strip()
+            continue
+        m = re.match(r"bindsym\s+(?:--\S+\s+)*(\S+)\s+(.+)", line)
+        if m and not depth:
+            rows.append((m.group(1), m.group(2).strip(), desc))
+        if line and not line.startswith("#"):
+            desc = ""
+    return rows
+
+
+def builtin_rows():
+    rows = []
+    for path in [MAIN] + sorted(glob.glob(os.path.join(I3, "config.d", "*.conf"))):
+        if os.path.abspath(path) != os.path.abspath(CUSTOM):
+            rows += parse(path)
+    return rows
+
+
+def write_custom(rows):
+    """Write the custom file; validate with `i3 -C`; roll back on failure.
+    Returns "" on success, else i3's error text."""
+    old = open(CUSTOM, encoding="utf-8").read() if os.path.exists(CUSTOM) else None
+    os.makedirs(os.path.dirname(CUSTOM), exist_ok=True)
+    body = HEADER
+    for combo, cmd, desc in rows:
+        body += "\n"
+        if desc:
+            body += f"# desc: {desc}\n"
+        body += f"bindsym {combo} {cmd}\n"
+    with open(CUSTOM, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    chk = subprocess.run(["i3", "-C", "-c", MAIN], capture_output=True, text=True)
+    if chk.returncode != 0 or "ERROR" in chk.stdout:
+        if old is None:
+            os.remove(CUSTOM)
+        else:
+            with open(CUSTOM, "w", encoding="utf-8") as fh:
+                fh.write(old)
+        return (chk.stdout + chk.stderr).strip() or "i3 rejected the config"
+    subprocess.run(["i3-msg", "-q", "reload"])
+    return ""
+
+
+def describe(cmd):
+    return re.sub(r"^exec\s+(--no-startup-id\s+)?", "", cmd).strip()
+
+
+def accent():
+    try:
+        m = re.search(r"#([0-9a-fA-F]{6})", open(ACCENT_CSS).read())
+        if m:
+            return "#" + m.group(1)
+    except OSError:
+        pass
+    return "#c82c3b"
+
+
+def load_css():
+    a = accent()
+    css = ("""
+    .intro { font-size: 12px; }
+    .scope { color: %s; font-weight: 700; font-size: 11px; }
+    .record { font-weight: 700; }
+    .capture { font-family: monospace; font-size: 14px; padding: 8px 10px; }
+    .capturing { background: alpha(%s, 0.16); border: 1px solid %s; }
+    .err { color: %s; }
+    """ % (a, a, a, a))
+    prov = Gtk.CssProvider()
+    prov.load_from_data(css.encode())
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+# ---------------------------------------------------------------- record dialog
+class KeyDialog(Gtk.Dialog):
+    """Record one hotkey: press a combo, pick what it does."""
+
+    def __init__(self, parent, variables, taken, row=None):
+        super().__init__(title="Edit hotkey" if row else "Record a hotkey",
+                         transient_for=parent, modal=True)
+        self.variables, self.taken = variables, taken
+        self.set_default_size(480, -1)
+        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        self.save = self.add_button("Save", Gtk.ResponseType.OK)
+        self.combo = row[0] if row else ""
+        cmd = row[1] if row else ""
+        is_exec = (not row) or cmd.startswith("exec")
+        self.capturing = False
+        self.held = []
+
+        g = Gtk.Grid(column_spacing=10, row_spacing=10, margin=16)
+        self.get_content_area().add(g)
+
+        g.attach(Gtk.Label(label="Keys", xalign=0), 0, 0, 1, 1)
+        self.keybtn = Gtk.Button()
+        self.keybtn.get_style_context().add_class("capture")
+        self.keybtn.set_hexpand(True)
+        self.keybtn.connect("clicked", self._start_capture)
+        g.attach(self.keybtn, 1, 0, 1, 1)
+
+        g.attach(Gtk.Label(label="Does", xalign=0), 0, 1, 1, 1)
+        self.kind = Gtk.ComboBoxText()
+        self.kind.append("exec", "Run a program / command")
+        self.kind.append("i3", "i3 action (e.g. layout tabbed)")
+        self.kind.set_active_id("exec" if is_exec else "i3")
+        g.attach(self.kind, 1, 1, 1, 1)
+
+        g.attach(Gtk.Label(label="Command", xalign=0), 0, 2, 1, 1)
+        self.cmd = Gtk.Entry()
+        self.cmd.set_placeholder_text("e.g. firefox-esr   or   kitty -e htop")
+        self.cmd.set_text(describe(cmd) if is_exec else cmd)
+        g.attach(self.cmd, 1, 2, 1, 1)
+
+        g.attach(Gtk.Label(label="Description", xalign=0), 0, 3, 1, 1)
+        self.desc = Gtk.Entry()
+        self.desc.set_placeholder_text("shown in the key list (optional)")
+        self.desc.set_text(row[2] if row else "")
+        g.attach(self.desc, 1, 3, 1, 1)
+
+        self.msg = Gtk.Label(xalign=0, wrap=True)
+        self.msg.get_style_context().add_class("err")
+        g.attach(self.msg, 0, 4, 2, 1)
+
+        self.connect("key-press-event", self._on_key)
+        self.connect("key-release-event", self._on_release)
+        self._show_combo()
+        self.show_all()
+        if not row:
+            self._start_capture()
+
+    def _show_combo(self):
+        self.keybtn.get_style_context().remove_class("capturing")
+        self.keybtn.set_label(pretty(self.combo, self.variables) if self.combo
+                              else "Click here, then press the keys")
+
+    def _start_capture(self, *_):
+        self.capturing = True
+        self.held = []
+        self.keybtn.grab_focus()
+        self.keybtn.get_style_context().add_class("capturing")
+        self.keybtn.set_label("Press the key combination…   (Esc to cancel)")
+        self.msg.set_text("")
+
+    def _live(self):
+        seen = [m for m in HELD_ORDER if m in self.held]
+        self.keybtn.set_label("  ".join(seen) + ("  +  …" if seen else
+                              "Press the key combination…   (Esc to cancel)"))
+
+    def _on_release(self, _w, ev):
+        if not self.capturing:
+            return False
+        name = Gdk.keyval_name(ev.keyval) or ""
+        tok = HELD_LABEL.get(name)
+        if tok and tok in self.held:
+            self.held.remove(tok)
+            self._live()
+        return True
+
+    def _on_key(self, _w, ev):
+        if not self.capturing:
+            return False
+        name = Gdk.keyval_name(Gdk.keyval_to_lower(ev.keyval)) or ""
+        raw = Gdk.keyval_name(ev.keyval) or ""
+        if raw in MODIFIER_KEYS:            # modifier down — show it live
+            tok = HELD_LABEL.get(raw)
+            if tok and tok not in self.held:
+                self.held.append(tok)
+            self._live()
+            return True
+        st = ev.state
+        mods = []
+        if st & (Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.MOD4_MASK):
+            mods.append("$mod")
+        if st & Gdk.ModifierType.CONTROL_MASK:
+            mods.append("Ctrl")
+        if st & Gdk.ModifierType.MOD1_MASK:
+            mods.append("Mod1")
+        if st & Gdk.ModifierType.SHIFT_MASK:
+            mods.append("Shift")
+        if name == "escape" and not mods:
+            self.capturing = False
+            self._show_combo()
+            self.msg.set_text("")
+            return True
+        bare_ok = (name.startswith(("f", "xf86")) and name[1:2].isalnum()) or name in ("print", "pause")
+        if not mods and not bare_ok:
+            self.msg.set_text("Hold a modifier (Super, Ctrl, Alt or Shift) so the key still types normally.")
+            return True
+        # i3 binds the lowercased keysym with a separate Shift modifier
+        # (e.g. $mod+Shift+q), so use the lowered name, not the shifted keysym.
+        self.combo = "+".join(mods + [name])
+        self.capturing = False
+        self._show_combo()
+        clash = self.taken.get(norm(self.combo, self.variables))
+        self.msg.set_text(f"Already used by: {clash}" if clash else "")
+        return True
+
+    def result(self):
+        """(combo, i3 command, desc) or an error string."""
+        if not self.combo:
+            return "Record a key combination first."
+        cmd = self.cmd.get_text().strip()
+        if not cmd:
+            return "Enter what the hotkey should run."
+        if "\n" in cmd:
+            return "The command must be one line."
+        clash = self.taken.get(norm(self.combo, self.variables))
+        if clash:
+            return f"{pretty(self.combo, self.variables)} is already used: {clash}"
+        line = f"exec --no-startup-id {cmd}" if self.kind.get_active_id() == "exec" else cmd
+        return (self.combo, line, self.desc.get_text().strip())
+
+
+# ---------------------------------------------------------------- main window
+class Hotkeys(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Hotkeys")
+        self.set_wmclass("hemo-hotkeys", "hemo-hotkeys")
+        self.set_type_hint(Gdk.WindowTypeHint.DIALOG)   # floats via the dialog rule
+        self.set_default_size(740, 560)
+        self.connect("destroy", Gtk.main_quit)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=14)
+        self.add(box)
+
+        intro = Gtk.Label(xalign=0, wrap=True)
+        intro.get_style_context().add_class("intro")
+        intro.set_markup("Every key binding is listed below — <b>yours</b> can be "
+                         "recorded, edited and removed; built-in ones are shown so "
+                         "you can see which keys are taken.")
+        box.pack_start(intro, False, False, 0)
+
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text("Search keys or actions…")
+        self.search.connect("search-changed", lambda _w: self.filter.refilter())
+        box.pack_start(self.search, False, False, 0)
+
+        # columns: keys, action, scope, index into self.custom (-1 = built-in)
+        self.store = Gtk.ListStore(str, str, str, int)
+        self.filter = self.store.filter_new()
+        self.filter.set_visible_func(self._visible)
+        self.view = Gtk.TreeView(model=self.filter)
+        self.view.set_headers_visible(True)
+        for i, title in enumerate(("Keys", "Action", "Scope")):
+            col = Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=i)
+            col.set_resizable(True)
+            if i == 1:
+                col.set_expand(True)
+            self.view.append_column(col)
+        self.view.get_selection().connect("changed", self._on_sel)
+        self.view.connect("row-activated", lambda *_: self._edit())
+        sw = Gtk.ScrolledWindow()
+        sw.add(self.view)
+        sw.set_vexpand(True)
+        box.pack_start(sw, True, True, 0)
+
+        btns = Gtk.Box(spacing=8)
+        add = Gtk.Button(label="Record new hotkey…")
+        add.get_style_context().add_class("record")
+        add.connect("clicked", lambda _w: self._add())
+        self.editb = Gtk.Button(label="Edit…")
+        self.editb.connect("clicked", lambda _w: self._edit())
+        self.rmb = Gtk.Button(label="Remove")
+        self.rmb.connect("clicked", lambda _w: self._remove())
+        close = Gtk.Button(label="Close")
+        close.connect("clicked", lambda _w: self.destroy())
+        for b in (add, self.editb, self.rmb):
+            btns.pack_start(b, False, False, 0)
+        btns.pack_end(close, False, False, 0)
+        box.pack_start(btns, False, False, 0)
+        self.reload()
+
+    def _visible(self, model, it, _data):
+        q = self.search.get_text().lower().strip()
+        if not q:
+            return True
+        return any(q in (model[it][c] or "").lower() for c in (0, 1, 2))
+
+    def reload(self):
+        self.variables = read_variables()
+        self.custom = parse(CUSTOM)
+        self.builtin = builtin_rows()
+        self.store.clear()
+        for i, (combo, cmd, desc) in enumerate(self.custom):
+            self.store.append([pretty(combo, self.variables), desc or describe(cmd), "yours", i])
+        for combo, cmd, desc in self.builtin:
+            self.store.append([pretty(combo, self.variables), desc or describe(cmd), "built-in", -1])
+        self._on_sel()
+
+    def _selected(self):
+        model, it = self.view.get_selection().get_selected()
+        return model[it][3] if it else -1
+
+    def _on_sel(self, *_):
+        mine = self._selected() >= 0
+        self.editb.set_sensitive(mine)
+        self.rmb.set_sensitive(mine)
+
+    def _taken(self, skip=-1):
+        t = {}
+        for combo, cmd, desc in self.builtin:
+            t[norm(combo, self.variables)] = desc or describe(cmd)
+        for i, (combo, cmd, desc) in enumerate(self.custom):
+            if i != skip:
+                t[norm(combo, self.variables)] = desc or describe(cmd)
+        return t
+
+    def _run_dialog(self, idx):
+        row = self.custom[idx] if idx >= 0 else None
+        dlg = KeyDialog(self, self.variables, self._taken(idx), row)
+        while dlg.run() == Gtk.ResponseType.OK:
+            r = dlg.result()
+            if isinstance(r, str):
+                dlg.msg.set_text(r)
+                continue
+            rows = list(self.custom)
+            if idx >= 0:
+                rows[idx] = r
+            else:
+                rows.append(r)
+            err = write_custom(rows)
+            if err:
+                dlg.msg.set_text("i3 didn't accept that, nothing was changed:\n" + err[:300])
+                continue
+            break
+        dlg.destroy()
+        self.reload()
+
+    def _add(self):
+        self._run_dialog(-1)
+
+    def _edit(self):
+        if self._selected() >= 0:
+            self._run_dialog(self._selected())
+
+    def _remove(self):
+        i = self._selected()
+        if i < 0:
+            return
+        rows = [r for j, r in enumerate(self.custom) if j != i]
+        err = write_custom(rows)
+        if err:
+            md = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
+                                   buttons=Gtk.ButtonsType.CLOSE, text="Couldn't remove the hotkey")
+            md.format_secondary_text(err[:300])
+            md.run()
+            md.destroy()
+        self.reload()
+
+
+if __name__ == "__main__":
+    load_css()
+    Hotkeys().show_all()
+    Gtk.main()

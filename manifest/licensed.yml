@@ -1,0 +1,16 @@
+# Hemo — licensed / commercial tools. NEVER baked into the image.
+#
+# A first-boot step (firstboot/) fetches these from your own storage by URL
+# and verifies a checksum. No license keys, credentials, URLs to private
+# storage, or secrets of any kind live in this repo or in the image.
+#
+# Storage source is NOT decided yet, so every entry is stubbed: the
+# first-boot step detects a missing source and skips cleanly with a notice.
+
+tools:
+  - name: burp-suite-pro
+    enabled: false          # flip to true once a storage source exists
+    source: STUB            # e.g. s3://.../burp-pro.tad or https://nas/...
+    checksum: STUB          # sha256, verified before install
+    activate: first-boot    # license entered interactively at first boot
+    note: "Community edition ships from apt; Pro replaces it here."

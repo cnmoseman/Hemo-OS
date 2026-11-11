@@ -1,0 +1,22 @@
+// Hemo fastfetch config. The two "#rrggbb" colors below follow your Hemo accent:
+// hemo-role-apply rewrites them on every role / accent / mode change, so leave
+// those lines in place. Everything else is yours to change.
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  "logo": {
+    "type": "file",
+    "source": "/usr/share/hemo/fastfetch/hemo-lizard.txt",
+    "color": { "1": "#d6626d" },
+    "padding": { "right": 3 }
+  },
+  "display": {
+    "color": { "keys": "#d6626d" },
+    "separator": "  "
+  },
+  "modules": [
+    "title", "separator",
+    "os", "kernel", "uptime", "packages", "shell",
+    "wm", "terminal", "cpu", "gpu", "memory", "disk", "localip",
+    "break", "colors"
+  ]
+}

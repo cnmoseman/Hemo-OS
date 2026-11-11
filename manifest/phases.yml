@@ -1,0 +1,388 @@
+# Install-panel phases
+#
+# Groups a role's tools under security-work phases while they install, so the
+# Hemo Welcome terminal shows a redraw-in-place panel (progress bar + current
+# tool + per-phase tally) instead of a scrolling list. The order here is the
+# panel's display order; a role only ever shows the phases its own tools touch.
+#
+# This is PRESENTATION ONLY. It changes nothing about what installs or how — a
+# tool not listed here falls into "Setup & tooling" at the end, so an unmapped
+# name is harmless. A tool should appear under at most one phase; where a tool is
+# dual-use (e.g. binwalk, yara), it's filed under the phase it most often serves.
+# Refine freely: this file is read by hemo-pkg's panel, nothing else.
+#
+# `phases:` below is the default (offensive-leaning) grouping used for red_team,
+# pentest, web, vuln_assessor, and any multi-role install. `role_phases:` further
+# down overrides it for a SINGLE-role install of a role listed there (reverse,
+# blue_host, blue_net), so a reverse box shows disassembly/debug/triage rows
+# instead of one lumped "Reversing", and a blue box shows real DFIR sub-phases.
+
+phases:
+  - name: "Recon"
+    tools:
+      - nmap
+      - masscan
+      - naabu
+      - rustscan
+      - subfinder
+      - dnsx
+      - amass
+      - httpx-toolkit
+      - theharvester
+      - spiderfoot
+      - recon-ng
+      - sherlock
+      - maltego
+      - dnsrecon
+      - dnsenum
+      - dnstwist
+      - dnsmap
+      - fierce
+      - dmitry
+      - metagoofil
+      - holehe
+      - maigret
+      - whatweb
+      - wafw00f
+      - onesixtyone
+      - gowitness
+      - snmpcheck
+      - nbtscan
+      - arp-scan
+      - netdiscover
+      - fping
+      - hping3
+      - discover
+
+  - name: "Traffic & Capture"
+    tools:
+      - wireshark
+      - tcpdump
+      - tshark
+      - termshark
+      - netsniff-ng
+      - tcpreplay
+      - suricata
+      - snort
+      - ngrep
+      - tcpflow
+      - p0f
+      - nfdump
+      - networkminer
+
+  - name: "Web"
+    tools:
+      - burpsuite
+      - zaproxy
+      - caido
+      - sqlmap
+      - nikto
+      - wpscan
+      - ffuf
+      - feroxbuster
+      - gobuster
+      - wfuzz
+      - dirb
+      - dirbuster
+      - skipfish
+      - nuclei
+      - arjun
+      - dalfox
+      - gau
+      - jwt_tool
+      - katana
+      - mitmproxy
+      - commix
+      - interactsh-client
+      - graphw00f
+      - graphqlmap
+      - cmseek
+      - sslscan
+      - testssl.sh
+      - sslyze
+      - ssldump
+      - davtest
+      - cadaver
+
+  - name: "Vuln scanning"
+    tools:
+      - grype
+      - trivy
+      - gvm
+      - legion
+
+  - name: "Creds & Crypto"
+    tools:
+      - hashcat
+      - hashcat-utils
+      - john
+      - hydra
+      - medusa
+      - ncrack
+      - patator
+      - crunch
+      - rsmangler
+      - maskprocessor
+      - cewl
+      - hashid
+      - hash-identifier
+      - name-that-hash
+      - mimikatz
+      - pypykatz
+      - lsassy
+      - donpapi
+      - samdump2
+      - creddump7
+      - chntpw
+      - gpp-decrypt
+      - passing-the-hash
+      - polenum
+      - trevorspray
+
+  - name: "AD & Lateral"
+    tools:
+      - smbclient
+      - smbmap
+      - ldap-utils
+      - krb5-user
+      - enum4linux-ng
+      - netexec
+      - python3-impacket
+      - impacket-scripts
+      - bloodhound-ce
+      - responder
+      - python3-ldapdomaindump
+      - kerbrute
+      - certipy-ad
+      - certsync
+      - ldeep
+      - mitm6
+      - bloodyAD
+      - coercer
+      - adidnsdump
+      - evil-winrm
+      - Snaffler
+      - proxychains4
+      - ligolo-ng
+      - chisel
+      - sshuttle
+      - iodine
+      - dns2tcp
+      - ptunnel
+      - udptunnel
+      - proxytunnel
+      - redsocks
+      - sslh
+
+  - name: "Exploits & C2"
+    tools:
+      - metasploit-framework
+      - exploitdb
+      - powershell-empire
+      - starkiller
+      - sliver
+      - AdaptixC2
+      - set
+      - weevely
+      - webshells
+      - laudanum
+      - windows-binaries
+      - msfpc
+      - donut
+      - Villain
+      - penelope
+      - PayloadsAllTheThings
+      - SharpCollection
+      - PEASS-ng
+      - pspy
+      - evilginx
+
+  - name: "Cloud"
+    tools:
+      - pacu
+      - scoutsuite
+      - prowler
+      - cloudfox
+      - awscli
+      - azure-cli
+      - azurehound
+      - roadrecon
+
+  - name: "Wireless & MITM"
+    tools:
+      - aircrack-ng
+      - wifite
+      - reaver
+      - pixiewps
+      - bully
+      - macchanger
+      - bettercap
+      - dsniff
+      - ettercap-graphical
+      - spooftooph
+
+  - name: "Reversing"
+    tools:
+      - ghidra
+      - gdb
+      - gdb-multiarch
+      - pwndbg
+      - apktool
+      - jadx
+      - dex2jar
+      - jd-gui
+      - patchelf
+      - hexedit
+      - edb-debugger
+      - frida
+      - angr
+      - radare2
+      - rizin
+      - rizin-cutter
+      - binwalk
+      - ltrace
+      - strace
+      - upx-ucl
+      - flare-floss
+      - python3-pwntools
+      - python3-ropgadget
+      - oletools
+      - libimage-exiftool-perl
+
+  - name: "DFIR / Blue"
+    tools:
+      - loki
+      - capa
+      - hayabusa
+      - velociraptor
+      - sleuthkit
+      - autopsy
+      - yara
+      - chkrootkit
+      - rkhunter
+      - clamav
+      - lynis
+      - bulk-extractor
+      - foremost
+      - regripper
+      - volatility3
+      - plaso
+      - chainsaw
+      - ewf-tools
+      - dc3dd
+      - pdfid
+      - pdf-parser
+      - osquery
+      - scalpel
+      - magicrescue
+      - guymager
+      - hashdeep
+      - trufflehog
+      - gitleaks
+
+
+# Per-role overrides — used only when exactly one of these roles is being
+# installed. Keep every one of that role's tools listed here; anything missed
+# still falls through to "Setup & tooling". These are the groupings a specialist
+# in that role would recognize.
+role_phases:
+
+  reverse:
+    - name: "Disassembly"
+      tools:
+        - ghidra
+        - radare2
+        - rizin
+        - rizin-cutter
+        - python3-ropgadget
+    - name: "Debug & trace"
+      tools:
+        - gdb
+        - gdb-multiarch
+        - pwndbg
+        - edb-debugger
+        - ltrace
+        - strace
+        - frida
+    - name: "Exploit dev"
+      tools:
+        - angr
+        - python3-pwntools
+    - name: "Android & bytecode"
+      tools:
+        - apktool
+        - jadx
+        - dex2jar
+        - jd-gui
+    - name: "Triage & unpack"
+      tools:
+        - binwalk
+        - upx-ucl
+        - patchelf
+        - hexedit
+        - flare-floss
+        - libimage-exiftool-perl
+        - oletools
+        - yara
+
+  blue_host:
+    - name: "Triage & live response"
+      tools:
+        - velociraptor
+        - osquery
+        - chkrootkit
+        - rkhunter
+        - lynis
+    - name: "Disk & image"
+      tools:
+        - sleuthkit
+        - autopsy
+        - bulk-extractor
+        - foremost
+        - scalpel
+        - magicrescue
+        - guymager
+        - ewf-tools
+        - dc3dd
+        - hashdeep
+    - name: "Memory & timelines"
+      tools:
+        - volatility3
+        - regripper
+        - plaso
+    - name: "Detection & hunting"
+      tools:
+        - loki
+        - capa
+        - hayabusa
+        - yara
+        - chainsaw
+    - name: "Malware & artifacts"
+      tools:
+        - clamav
+        - libimage-exiftool-perl
+        - binwalk
+        - oletools
+        - pdfid
+        - pdf-parser
+
+  blue_net:
+    - name: "Capture"
+      tools:
+        - tcpdump
+        - wireshark
+        - tshark
+        - termshark
+        - netsniff-ng
+        - tcpflow
+        - ngrep
+    - name: "IDS & analysis"
+      tools:
+        - suricata
+        - snort
+        - p0f
+        - networkminer
+    - name: "Flow & replay"
+      tools:
+        - tcpreplay
+        - nfdump

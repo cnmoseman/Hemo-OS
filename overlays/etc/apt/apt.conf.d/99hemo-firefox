@@ -1,0 +1,3 @@
+// Hemo: re-apply Firefox defaults after package changes (a kali-defaults
+// upgrade restores its distribution.ini bookmarks). See hemo-firefox-defaults.
+DPkg::Post-Invoke { "if [ -x /usr/local/bin/hemo-firefox-defaults ]; then /usr/local/bin/hemo-firefox-defaults || true; fi"; };

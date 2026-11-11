@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""hemo-open — spatial launcher for i3 (Hemo OS).
+
+Opens a new window on the side of the focused tile nearest the mouse. Mouse
+in the top half → window opens on top. Left half → left. Right half → right.
+Bottom half → bottom. Scale-free via a midline model, so being clearly in
+the left half of a wide tile reliably means LEFT (not overridden by raw-
+pixel proximity to the top edge).
+
+The build-ins (xdotool `getmouselocation`, i3-msg -t get_tree, python3-i3ipc)
+are already in the Hemo base, and autotiling is briefly SIGSTOPed during the
+critical section so it can't race our `i3-msg split <dir>` with its own
+aspect-based choice.
+
+Config: `~/.config/hemo/open.conf` (user) overrides `/usr/share/hemo/open.conf`
+(system defaults). Env: `HEMO_NO_OPEN=1` disables; `HEMO_OPEN_DEBUG=1` traces.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+PROG = "hemo-open"
+VERSION = "0.2"  # 0.1 = focus bump only; 0.2 = midline model + autotiling pause
+SYS_CONF = "/usr/share/hemo/open.conf"
+USER_CONF_REL = "hemo/open.conf"
+
+
+HELP = f"""{PROG} {VERSION} — spatial launcher for i3 (Hemo OS)
+
+Opens a new window on the side of the focused tile nearest the mouse. Scale-
+free: being in the left half of a tile means LEFT regardless of tile aspect.
+
+Usage:
+  {PROG} [--focus-only] <command> [args...]
+  {PROG} --dry-run
+  {PROG} --help | --version
+
+Options:
+  --focus-only   Just bump focus to the tile under the pointer (no smart
+                 split). Used for launcher menus (rofi, etc.) where the
+                 "new window" is a transient overlay.
+  --debug        Print the decision + any post-move to stderr. Env:
+                 HEMO_OPEN_DEBUG=1 is equivalent.
+  --dry-run      Compute + print what would happen, don't execute. Implies
+                 --debug.
+  --help, -h     This help.
+  --version      Version + config paths.
+
+Config file (one `key=value` per line, # for comments):
+  enabled=1              0 to passthrough (same as HEMO_NO_OPEN=1).
+  bias=balanced          balanced | sides | stacks — see below.
+  skip_classes=rofi,dmenu,lxpolkit
+                         window classes to ignore when post-move subscribes
+                         to window::new (so launcher menus don't trigger it).
+  autotiling_pause_ms=1000
+                         how long to SIGSTOP autotiling. 0 disables.
+  post_move_timeout_s=5  how long to wait on window::new before giving up.
+
+Biases:
+  balanced  midline: whichever axis the pointer is more off-center on wins.
+  sides     horizontal unless the pointer is in the top/bottom 30% strip.
+  stacks    vertical unless the pointer is in the left/right 30% strip.
+
+Env overrides:
+  HEMO_NO_OPEN=1     disable entirely (plain exec passthrough).
+  HEMO_OPEN_DEBUG=1  same as --debug.
+
+Lives at /usr/local/bin/{PROG}; system defaults at {SYS_CONF}; user config at
+~/.config/{USER_CONF_REL}. Part of Hemo OS."""
+
+
+# ---------------------------------------------------------------- argv parse
+FOCUS_ONLY = False
+DRY_RUN = False
+DEBUG = bool(os.environ.get("HEMO_OPEN_DEBUG"))
+args = sys.argv[1:]
+while args and args[0].startswith("-"):
+    a = args[0]
+    if a in ("-h", "--help"):
+        print(HELP)
+        sys.exit(0)
+    if a == "--version":
+        print(f"{PROG} {VERSION} (system config: {SYS_CONF}, user config: ~/.config/{USER_CONF_REL})")
+        sys.exit(0)
+    if a == "--focus-only":
+        FOCUS_ONLY = True
+        args.pop(0)
+        continue
+    if a == "--debug":
+        DEBUG = True
+        args.pop(0)
+        continue
+    if a == "--dry-run":
+        DRY_RUN = True
+        DEBUG = True
+        args.pop(0)
+        continue
+    # unknown flag → stop parsing; it belongs to the command
+    break
+
+if not DRY_RUN and not args:
+    print(f"usage: {PROG} [--focus-only] [--debug] <command> [args...]", file=sys.stderr)
+    print(f"       {PROG} --help", file=sys.stderr)
+    sys.exit(2)
+CMD = args
+
+
+def _dbg(msg):
+    if DEBUG:
+        print(f"{PROG}: {msg}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- config load
+DEFAULTS = {
+    "enabled": "1",
+    "bias": "balanced",
+    "skip_classes": "rofi,dmenu,lxpolkit",
+    "autotiling_pause_ms": "1000",
+    "post_move_timeout_s": "5",
+}
+
+
+def _load_conf():
+    out = dict(DEFAULTS)
+    for p in (SYS_CONF,
+              os.path.join(os.environ.get("XDG_CONFIG_HOME",
+                                          os.path.expanduser("~/.config")),
+                           USER_CONF_REL)):
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip().lower()
+                    if k in out:
+                        out[k] = v.strip()
+        except OSError:
+            continue
+    return out
+
+
+CONF = _load_conf()
+_dbg(f"config: {CONF}")
+
+if CONF["enabled"] != "1" or os.environ.get("HEMO_NO_OPEN"):
+    _dbg("disabled; plain exec")
+    if DRY_RUN:
+        sys.exit(0)
+    os.execvp(CMD[0], CMD)
+
+
+# ---------------------------------------------------------------- helpers
+def _run(args, timeout=1.0):
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------- autotiling pause
+try:
+    pause_ms = int(CONF["autotiling_pause_ms"])
+except ValueError:
+    pause_ms = 1000
+if not FOCUS_ONLY and not DRY_RUN and pause_ms > 0:
+    # Pause autotiling so it can't race our `i3-msg split <dir>`. A short-lived
+    # background sh does STOP → sleep → CONT, so autotiling always resumes even
+    # if hemo-open crashes or exec'ing early.
+    subprocess.Popen(
+        ["sh", "-c",
+         f"pkill -STOP -x autotiling 2>/dev/null; "
+         f"sleep {pause_ms / 1000.0:.3f}; "
+         f"pkill -CONT -x autotiling 2>/dev/null"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _dbg(f"autotiling paused for {pause_ms} ms")
+
+
+# ---------------------------------------------------------------- 1. focus bump
+_run(["xdotool", "mousemove_relative", "--", "0", "0"])
+time.sleep(0.025)
+
+if FOCUS_ONLY:
+    _dbg("--focus-only; exec without smart split")
+    if DRY_RUN:
+        sys.exit(0)
+    os.execvp(CMD[0], CMD)
+
+
+# ---------------------------------------------------------------- 2. decide
+split_dir = None  # "h" / "v"
+move_dir = None   # "left" / "up" / None
+try:
+    raw = _run(["xdotool", "getmouselocation", "--shell"]).strip()
+    loc = {}
+    for line in raw.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            loc[k] = v
+    mx, my = int(loc["X"]), int(loc["Y"])
+    tree = json.loads(_run(["i3-msg", "-t", "get_tree"]) or "{}")
+
+    def find_focused(n):
+        if n.get("focused"):
+            return n
+        for c in n.get("nodes", []) + n.get("floating_nodes", []):
+            r = find_focused(c)
+            if r:
+                return r
+        return None
+
+    f = find_focused(tree)
+    if f:
+        r = f["rect"]
+        cx, cy = mx - r["x"], my - r["y"]
+        if 0 <= cx <= r["width"] and 0 <= cy <= r["height"]:
+            fx = (cx - r["width"] / 2.0) / r["width"]
+            fy = (cy - r["height"] / 2.0) / r["height"]
+            bias = CONF["bias"].strip().lower()
+            if bias == "sides":
+                horizontal = abs(fy) < 0.30  # only vertical in top/bottom 30%
+            elif bias == "stacks":
+                horizontal = abs(fx) > 0.30  # only horizontal in left/right 30%
+            else:  # balanced (default)
+                horizontal = abs(fx) >= abs(fy)
+            if horizontal:
+                split_dir = "h"
+                if fx < 0:
+                    move_dir = "left"
+            else:
+                split_dir = "v"
+                if fy < 0:
+                    move_dir = "up"
+            _dbg(f"pointer=({mx},{my}) focused rect=({r['x']},{r['y']},{r['width']}x{r['height']}) "
+                 f"fx={fx:+.3f} fy={fy:+.3f} bias={bias} → split {split_dir}, "
+                 f"move={move_dir or '(default side)'}")
+        else:
+            _dbg(f"pointer=({mx},{my}) outside focused rect — plain exec")
+    else:
+        _dbg("no focused container — plain exec")
+except Exception as exc:
+    _dbg(f"decision raised {exc!r} — plain exec")
+
+if not split_dir:
+    if DRY_RUN:
+        print(f"{PROG}: dry-run — would plain-exec: {' '.join(CMD) if CMD else '(no command)'}")
+        sys.exit(0)
+    if not CMD:
+        sys.exit(0)
+    os.execvp(CMD[0], CMD)
+
+# ---------------------------------------------------------------- 3. split + exec
+if DRY_RUN:
+    print(f"{PROG}: dry-run — split {split_dir}, "
+          f"{'post-move ' + move_dir if move_dir else 'no post-move'}, "
+          f"would exec: {' '.join(CMD) if CMD else '(no command)'}")
+    sys.exit(0)
+
+_run(["i3-msg", "split", split_dir])
+
+if not move_dir:
+    _dbg("no post-move needed; exec")
+    os.execvp(CMD[0], CMD)
+
+# ---------------------------------------------------------------- 4. post-move
+try:
+    import i3ipc
+except ImportError:
+    _dbg("python3-i3ipc missing — exec without post-move")
+    os.execvp(CMD[0], CMD)
+
+SKIP_CLASSES = tuple(
+    c.strip().lower() for c in CONF["skip_classes"].split(",") if c.strip()
+)
+try:
+    timeout_s = float(CONF["post_move_timeout_s"])
+except ValueError:
+    timeout_s = 5.0
+
+
+def _is_skip(klass):
+    k = (klass or "").lower()
+    return any(s in k for s in SKIP_CLASSES)
+
+
+try:
+    i3 = i3ipc.Connection()
+except Exception as exc:
+    _dbg(f"i3ipc Connection failed ({exc!r}); exec without post-move")
+    os.execvp(CMD[0], CMD)
+
+
+def on_new(conn, event):
+    try:
+        klass = getattr(event.container, "window_class", "") or ""
+        if _is_skip(klass):
+            _dbg(f"window::new con_id={event.container.id} class={klass!r} (skipped)")
+            return
+        cid = event.container.id
+        _dbg(f"window::new con_id={cid} class={klass!r} → move {move_dir}")
+        subprocess.run(
+            ["i3-msg", f"[con_id={cid}] focus; move {move_dir}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0,
+        )
+    except Exception as exc:
+        _dbg(f"on_new raised {exc!r}")
+    finally:
+        try:
+            conn.main_quit()
+        except Exception:
+            pass
+
+
+i3.on("window::new", on_new)
+
+child_pid = os.fork()
+if child_pid == 0:
+    try:
+        os.setsid()
+    except Exception:
+        pass
+    os.execvp(CMD[0], CMD)
+
+try:
+    i3.main(timeout=timeout_s)
+except TypeError:
+    # i3ipc < 2.1 has no timeout kwarg — fall back to SIGALRM
+    import signal
+
+    def _bail(sig, frm):
+        try:
+            i3.main_quit()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGALRM, _bail)
+    signal.alarm(int(timeout_s) or 1)
+    try:
+        i3.main()
+    except Exception:
+        pass
+    signal.alarm(0)
+except Exception as exc:
+    _dbg(f"i3.main raised {exc!r}")
+
+sys.exit(0)

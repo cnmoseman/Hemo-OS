@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# hemo-tmux-log — pipe-pane sink that writes each line to the ACTIVE
+# engagement's tmux-logs/ dir, re-read per line. Lets you switch engagements
+# mid-session (`hemo-engagement use <slug>`) and have further output land in
+# the new engagement's log file without toggling pipe-pane off/on.
+#
+# Called from the tmux binding: `pipe-pane -o "hemo-tmux-log #S #W"`.
+# Fork-free hot path: read/[-d]/printf/mkdir are bash builtins; `mkdir -p`
+# only runs the first time a day for a new engagement.
+#
+# File layout:
+#   ~/engagements/<slug>/tmux-logs/<session>-<window>-YYYY-MM-DD.log
+#   ~/engagements/tmux-logs/<session>-<window>-YYYY-MM-DD.log   (no engagement)
+set -u
+S="${1:-?}"; W="${2:-?}"
+STATE="$HOME/.config/hemo/engagement"
+FALLBACK="$HOME/engagements/tmux-logs"
+
+prev_eng=""; logdir=""; today=""
+while IFS= read -r line; do
+    eng=""
+    [ -f "$STATE" ] && read -r eng < "$STATE"
+    if [ "$eng" != "$prev_eng" ]; then
+        # hemo-engagement writes the full path; accept a bare slug too
+        case "$eng" in
+            "")  dir="" ;;
+            /*)  dir="$eng" ;;
+            *)   dir="$HOME/engagements/$eng" ;;
+        esac
+        if [ -n "$dir" ] && [ -d "$dir" ]; then
+            logdir="$dir/tmux-logs"
+        else
+            logdir="$FALLBACK"
+        fi
+        [ -d "$logdir" ] || mkdir -p "$logdir"
+        prev_eng="$eng"
+    fi
+    printf -v today '%(%F)T' -1
+    printf '%s\n' "$line" >> "$logdir/${S}-${W}-${today}.log"
+done

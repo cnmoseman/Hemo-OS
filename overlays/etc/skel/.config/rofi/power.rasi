@@ -1,0 +1,44 @@
+/* Hemo power menu — a single row of big icons (used by hemo-power).
+   Inherits colors/font from config.rasi; only the layout differs. */
+@import "config.rasi"
+
+window {
+    width: 600px;
+    border-radius: 14px;
+}
+mainbox {
+    padding: 18px;
+    spacing: 14px;
+    children: [inputbar, listview];
+}
+inputbar {
+    padding: 0 4px;
+    background-color: transparent;
+    children: [prompt, textbox-uptime];
+}
+prompt          { text-color: @accent; font: "JetBrainsMono Nerd Font Mono Bold 11"; }
+textbox-uptime  { expand: true; horizontal-align: 1; text-color: @muted; str: ""; }
+
+listview {
+    layout: vertical;
+    columns: 5;
+    lines: 1;
+    fixed-height: false;
+    fixed-columns: true;
+    spacing: 10px;
+    cycle: true;
+}
+element {
+    orientation: vertical;
+    padding: 0 0 46px 0;   /* extra bottom offsets the big icon font's line spacing */
+    border: 0 0 3px 0;
+    border-radius: 10px;
+    background-color: @surface;
+}
+element normal.normal,
+element alternate.normal { background-color: @surface; }
+element-text {
+    horizontal-align: 0.5;
+    vertical-align: 0.5;
+    font: "JetBrainsMono Nerd Font Mono Medium 10";
+}

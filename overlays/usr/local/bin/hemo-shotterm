@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# hemo-shotterm — open a SEPARATE terminal window locked to the team screenshot
+# standard, without toggling the whole desktop into report mode (hemo-report).
+#
+# It uses the user's DEFAULT terminal (kitty or qterminal — see "which terminal"
+# below) and forces the standard's look on this one window — font size, shell
+# prompt and colors (MODE / ACCENT / TERMCOLORS / TERMFG, rendered by
+# `hemo-role-apply --kitty-print` / `--qterminal-print`) — so a capture looks the
+# same no matter how the daily terminal is riced. kitty also gets fixed opacity;
+# both get a fixed window size.
+#
+#   hemo-shotterm                  # open the screenshot terminal
+#   hemo-shotterm <cmd...>         # run a command in it
+#   hemo-shotterm --prompt NAME    # give it its OWN prompt (a preset from
+#                                  #   /usr/share/hemo/prompts) — edit freely after
+#   hemo-shotterm --prompt list    # list presets; `--prompt reset` = back to the standard's
+# Prompt order: ~/.config/hemo/shotterm/starship.toml (its own), else the report
+# standard's starship.toml, else the user's daily one.
+# Also reachable as `hemo-report term`. The kitty window has class `hemo-shotterm`
+# (an i3 rule can target it); qterminal has no per-window class.
+set -u
+
+PROMPTS=/usr/share/hemo/prompts
+OWN="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/shotterm/starship.toml"
+if [ "${1:-}" = --prompt ]; then
+    case "${2:-}" in
+        list|"") ls "$PROMPTS" 2>/dev/null | sed -n 's/\.toml$//p'
+                 [ -f "$OWN" ] && echo "(own prompt set: $OWN)" || echo "(using the report standard's prompt)" ;;
+        reset)   rm -f "$OWN"; echo "hemo-shotterm: prompt reset to the report standard's" ;;
+        *[!a-z]*) echo "hemo-shotterm: bad preset '$2'" >&2; exit 1 ;;
+        *)       [ -f "$PROMPTS/$2.toml" ] || { echo "hemo-shotterm: no preset '$2' (try --prompt list)" >&2; exit 1; }
+                 mkdir -p "$(dirname "$OWN")" && cp -f "$PROMPTS/$2.toml" "$OWN" \
+                   && echo "hemo-shotterm: prompt -> $2 ($OWN — edit freely)" ;;
+    esac
+    exit 0
+fi
+
+# active report standard: per-user override, else the shipped one
+std_dir() {
+    local d
+    for d in "${XDG_CONFIG_HOME:-$HOME/.config}/hemo/report" /usr/share/hemo/report; do
+        [ -f "$d/profile.env" ] && { printf '%s\n' "$d"; return; }
+    done
+}
+DIR="$(std_dir)"
+get() { [ -n "$DIR" ] && sed -n "s/^$1=//p" "$DIR/profile.env" 2>/dev/null | tail -n1; }
+
+# TEXT (point size or small|medium|large) -> px, matching hemo-appearance's table
+TEXT="$(get TEXT)"
+case "$TEXT" in
+    small)         FS=10 ;;
+    large)         FS=13 ;;
+    medium|"")     FS=11 ;;
+    *[!0-9]*)      FS=11 ;;                 # unknown word -> default
+    *)             FS="$TEXT" ;;            # explicit number
+esac
+
+# OPACITY (100|95|90|85) -> kitty background_opacity (0..1); captures want 100
+OPACITY="$(get OPACITY)"; OPACITY="${OPACITY:-100}"
+case "$OPACITY" in *[!0-9]*) OPACITY=100 ;; esac
+OPF="$(awk "BEGIN{printf \"%.2f\", $OPACITY/100}")"
+
+# prompt: this terminal's own, else the standard's, else the user's daily one
+STAR="$OWN"
+[ -f "$STAR" ] || STAR="$DIR/starship.toml"
+[ -f "$STAR" ] || STAR="${XDG_CONFIG_HOME:-$HOME/.config}/starship.toml"
+
+# report colors (MODE/ACCENT/TERMCOLORS/TERMFG from the standard)
+MODE="$(get MODE)"; ACCENT="$(get ACCENT)"
+TERMCOLORS="$(get TERMCOLORS)"; TERMFG="$(get TERMFG)"
+
+# which terminal? an explicit per-user pick (Welcome setup writes ~/.config/hemo/terminal)
+# wins; else the system x-terminal-emulator alternative; else kitty.
+pick_term() {
+    local f="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/terminal" x=
+    if [ -r "$f" ]; then
+        read -r x <"$f" 2>/dev/null || true
+        case "$x" in kitty|qterminal) printf '%s\n' "$x"; return;; esac
+    fi
+    x="$(command -v x-terminal-emulator 2>/dev/null)" && x="$(readlink -f "$x" 2>/dev/null)"
+    case "$(basename "${x:-}")" in
+        qterminal) echo qterminal ;;
+        *)         echo kitty ;;
+    esac
+}
+TERMINAL="$(pick_term)"
+
+if [ "$TERMINAL" = qterminal ] && command -v qterminal >/dev/null 2>&1; then
+    # Lock a report colorscheme (HemoShot) + a one-off profile. qtermwidget >=2.4
+    # (current Kali) enumerates ONLY /usr/share/qtermwidget*/color-schemes/,
+    # so HemoShot has to be persisted there by `hemo-role-apply --qterminal-schemes`
+    # (root; provision runs it and any root re-theme regenerates it). Shotterm
+    # only chooses the name; it never writes schemes itself any more.
+    SCHEME=Hemo
+    for d in /usr/share/qtermwidget*/color-schemes; do
+        [ -f "$d/HemoShot.colorscheme" ] && SCHEME=HemoShot && break
+    done
+    if [ "$SCHEME" = Hemo ]; then
+        echo "hemo-shotterm: HemoShot scheme not installed — using daily Hemo." \
+             "Run \`sudo hemo-role-apply --qterminal-schemes\` to install it." >&2
+    fi
+    # one-off profile loaded by `qterminal -p hemo-shotterm` (~/.config/hemo-shotterm.conf).
+    # Start from the daily qterminal.ini so every key qterminal silently requires
+    # (version, emulation, Term, …) is present — a minimal profile falls back to
+    # qterminal's built-in default scheme (white). Then override just the keys we
+    # want different for a capture-locked window.
+    PROF="${XDG_CONFIG_HOME:-$HOME/.config}/hemo-shotterm.conf"
+    DAILY="${XDG_CONFIG_HOME:-$HOME/.config}/qterminal.org/qterminal.ini"
+    if [ -r "$DAILY" ]; then
+        cp -f "$DAILY" "$PROF"
+    else
+        : >"$PROF"
+        printf '[General]\nversion=2.4.0\nemulation=default\nTerm=xterm-256color\n' >"$PROF"
+    fi
+    # overwrite one key under [General], add if missing
+    _set() {
+        local k="$1" v="$2"
+        if grep -q "^$k=" "$PROF"; then
+            sed -i "s|^$k=.*|$k=$v|" "$PROF"
+        else
+            sed -i "0,/^\[General\]$/s||[General]\n$k=$v|" "$PROF"
+        fi
+    }
+    _set colorScheme        "$SCHEME"
+    _set fontFamily         "JetBrains Mono"
+    _set fontSize           "$FS"
+    _set TerminalTransparency 0
+    _set TerminalMargin     5
+    _set MenuVisible        false
+    _set HideTabBarWithOneTab true
+    _set ScrollbarPosition  0
+    _set AskOnExit          false
+    _set SaveSizeOnExit     false
+    _set SavePosOnExit      false
+    _set SaveStateOnExit    false
+    # force fixed window size; SaveSizeOnExit=false above makes qterminal honor it
+    if grep -q "^\[MainWindow\]" "$PROF"; then
+        sed -i '/^\[MainWindow\]$/,/^\[/ { /^fixedSize=/d; /^size=/d; /^pos=/d; /^state=/d; }' "$PROF"
+        sed -i 's|^\[MainWindow\]$|[MainWindow]\nfixedSize=@Size(900 560)|' "$PROF"
+    else
+        printf '\n[MainWindow]\nfixedSize=@Size(900 560)\n' >>"$PROF"
+    fi
+    QARGS=(-p hemo-shotterm)
+    [ $# -gt 0 ] && QARGS+=(-e "$@")
+    exec env STARSHIP_CONFIG="$STAR" qterminal "${QARGS[@]}"
+fi
+
+# default (and the fallback when qterminal is chosen but missing): kitty, locked
+# via a report-colors file layered over the daily kitty.conf (later -c wins).
+KCONF="${XDG_CONFIG_HOME:-$HOME/.config}/kitty/kitty.conf"
+CONFS=()
+[ -f "$KCONF" ] && CONFS+=(-c "$KCONF")
+COLORS="${XDG_RUNTIME_DIR:-/tmp}/hemo-shotterm-$(id -u).conf"
+if [ -n "$MODE" ] && [ -n "$ACCENT" ] && command -v hemo-role-apply >/dev/null 2>&1 &&
+   hemo-role-apply --kitty-print "$MODE" "$ACCENT" "${TERMCOLORS:-auto}" "${TERMFG:-default}" \
+       >"$COLORS" 2>/dev/null && [ -s "$COLORS" ]; then
+    CONFS+=(-c "$COLORS")
+else
+    echo "hemo-shotterm: no report colors in the standard — using the live theme" >&2
+fi
+
+command -v kitty >/dev/null 2>&1 || { echo "hemo-shotterm: kitty not installed" >&2; exit 1; }
+
+exec env STARSHIP_CONFIG="$STAR" kitty "${CONFS[@]}" \
+    --class hemo-shotterm \
+    --title "Hemo — screenshot terminal" \
+    -o font_size="$FS" \
+    -o background_opacity="$OPF" \
+    -o confirm_os_window_close=0 \
+    "$@"

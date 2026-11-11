@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# hemo-vol — change the volume and show an on-screen level, so the media keys
+# give feedback instead of changing sound silently. Wraps pamixer + dunstify.
+#
+#   hemo-vol up | down | mute
+#
+# Bound to XF86AudioRaiseVolume / LowerVolume / Mute in the i3 config. The
+# notification replaces itself (one stack-tag) so holding a key doesn't stack
+# a column of popups.
+set -u
+STEP="${HEMO_VOL_STEP:-5}"
+
+command -v pamixer >/dev/null 2>&1 || exit 0
+case "${1:-}" in
+  up)   pamixer -u; pamixer -i "$STEP" ;;
+  down) pamixer -u; pamixer -d "$STEP" ;;
+  mute) pamixer -t ;;
+  *) echo "usage: hemo-vol up|down|mute" >&2; exit 1 ;;
+esac
+
+vol="$(pamixer --get-volume 2>/dev/null || echo 0)"
+
+if pamixer --get-mute 2>/dev/null | grep -q true; then
+  icon="audio-volume-muted"; body=" muted"
+else
+  if   [ "$vol" -eq 0 ];  then icon="audio-volume-muted"
+  elif [ "$vol" -lt 34 ]; then icon="audio-volume-low"
+  elif [ "$vol" -lt 67 ]; then icon="audio-volume-medium"
+  else                         icon="audio-volume-high"
+  fi
+  body="${vol}%"
+fi
+
+command -v dunstify >/dev/null 2>&1 || exit 0
+# -h int:value:$vol draws dunst's progress bar; stack-tag replaces the last one
+dunstify -a hemo-vol -u low -i "$icon" -t 1200 \
+  --replace=911 --stack-tag=hemo-vol \
+  -h "int:value:${vol}" "Volume" "$body"

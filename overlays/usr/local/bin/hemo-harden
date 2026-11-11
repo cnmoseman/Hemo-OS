@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# hemo-harden — toggle the OPT-IN "roaming / hostile-network" hardening posture.
+#
+# The SAFE, always-on hardening (AppArmor, Firejail on the browser, the
+# low-risk sysctls in /etc/sysctl.d/99-hemo-hardening.conf) is baked at build
+# time and is NOT controlled here. This toggles only the aggressive bits that
+# would otherwise fight offensive work, so they are OFF by default:
+#
+#   * ufw      — default-deny INBOUND (blocks reverse-shell catchers, Responder,
+#                SMB/HTTP servers while on). Outbound stays open.
+#   * net sysctls — reverse-path filtering + drop source-routed/redirect packets
+#                   (these break MITM/relay: bettercap, mitm6, Responder).
+#
+# Turn it ON when the box is just a daily driver on an untrusted network; turn
+# it OFF before an engagement where you catch callbacks or run MITM.
+#
+#   hemo-harden status      # show current posture
+#   hemo-harden on          # engage roaming hardening
+#   hemo-harden off         # release it (back to ops-ready)
+#
+# Must run as root for on/off.
+set -uo pipefail
+
+STATE=/var/lib/hemo
+MARK="$STATE/harden.on"
+SYSCTL=/etc/sysctl.d/98-hemo-harden-strict.conf
+
+need_root(){ [ "$(id -u)" -eq 0 ] || { echo "hemo-harden: run as root (sudo hemo-harden $1)"; exit 1; }; }
+
+show_status(){
+  if [ -f "$MARK" ]; then echo "posture: HARDENED (roaming)  — engaged $(cat "$MARK")"
+  else echo "posture: OPS-READY (default) — aggressive hardening off"; fi
+  printf '  ufw      : %s\n' "$(command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | head -1 | sed 's/Status: //' || echo 'n/a')"
+  printf '  apparmor : %s (always-on)\n' "$(systemctl is-active apparmor 2>/dev/null || echo 'n/a')"
+}
+
+case "${1:-status}" in
+  status) show_status ;;
+
+  on)
+    need_root on
+    install -d "$STATE"
+    echo "[hemo-harden] engaging roaming hardening"
+
+    if command -v ufw >/dev/null 2>&1; then
+      ufw --force reset >/dev/null 2>&1 || true
+      ufw default deny incoming  >/dev/null
+      ufw default allow outgoing >/dev/null
+      ufw --force enable >/dev/null
+      echo "  + ufw: default-deny inbound (reverse shells/servers will be blocked while on)"
+    fi
+
+    cat > "$SYSCTL" <<'EOF'
+# hemo-harden (roaming) — aggressive net hardening; removed by `hemo-harden off`.
+# These break MITM/relay on purpose — do not leave on during an engagement.
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+EOF
+    sysctl --system >/dev/null 2>&1 && echo "  + strict net sysctls applied"
+
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$MARK"
+    echo "[hemo-harden] HARDENED. Run 'hemo-harden off' before catching callbacks."
+    ;;
+
+  off)
+    need_root off
+    echo "[hemo-harden] releasing roaming hardening (back to ops-ready)"
+    command -v ufw >/dev/null 2>&1 && { ufw --force disable >/dev/null; echo "  - ufw disabled"; }
+    rm -f "$SYSCTL" && sysctl --system >/dev/null 2>&1 && echo "  - strict net sysctls reverted"
+    rm -f "$MARK"
+    echo "[hemo-harden] OPS-READY."
+    ;;
+
+  *) echo "usage: hemo-harden [status|on|off]"; exit 1 ;;
+esac

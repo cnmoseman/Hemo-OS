@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hemo Welcome
+Comment=Hemo OS first-run setup
+Exec=hemo-welcome --autostart
+Icon=applications-system
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+# For GNOME/KDE/XFCE sessions. Under i3 the autostart is the `exec` line in the
+# i3 config; hemo-welcome --autostart self-suppresses via ~/.config/hemo/welcome.conf.

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# hemo-bom — capture a bill of materials (what is ACTUALLY installed) for the
+# current engagement.
+#
+# This is Hemo's reproducibility record in the rolling-tools model: tools install
+# on demand (online, per role), so instead of pinning the whole distro we record
+# exactly what was present per engagement. Covers every install method Hemo uses:
+# apt, pipx, pip, `go install` binaries, and /opt git clones.
+#
+# Folds into the engagement workflow: `hemo-engagement` calls this at start
+# (baseline) and close (final); the report pipeline includes the output.
+#
+# Usage:  hemo-bom [output-dir]
+# Output dir preference: $1  ->  active engagement (hemo-engagement)  ->
+#                        $HEMO_ENGAGEMENT  ->  newest ~/engagements/*  ->
+#                        ~/engagements  ->  current dir
+set -u
+
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+host="$(hostname 2>/dev/null || echo unknown)"
+
+# --- pick output directory ---------------------------------------------------
+if [ "${1:-}" ]; then
+  out="$1"
+elif out="$(hemo-engagement path 2>/dev/null)" && [ "$out" ]; then
+  :   # active engagement
+elif [ "${HEMO_ENGAGEMENT:-}" ]; then
+  out="$HEMO_ENGAGEMENT"
+elif [ -d "$HOME/engagements" ]; then
+  newest="$(find "$HOME/engagements" -maxdepth 1 -mindepth 1 -type d -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | head -1 | cut -d' ' -f2-)"
+  out="${newest:-$HOME/engagements}"
+else
+  out="$PWD"
+fi
+mkdir -p "$out" 2>/dev/null || { echo "hemo-bom: cannot create $out" >&2; exit 1; }
+f="$out/bom-$host-$ts.txt"
+
+{
+  echo "# Hemo bill of materials"
+  echo "# host:   $host"
+  echo "# user:   $(id -un 2>/dev/null || echo '?')"
+  echo "# date:   $ts (UTC)"
+  echo "# kernel: $(uname -r 2>/dev/null || echo '?')"
+  if [ -f /etc/os-release ]; then . /etc/os-release 2>/dev/null; echo "# distro: ${PRETTY_NAME:-unknown}"; fi
+  # installed Hemo roles, if the role installer recorded them
+  for m in /var/lib/hemo/roles "$HOME/.config/hemo/roles.installed"; do
+    [ -f "$m" ] && echo "# roles:  $(tr '\n' ' ' < "$m")"
+  done
+  echo
+
+  echo "## apt (dpkg)"
+  dpkg-query -W -f='${Package}\t${Version}\n' 2>/dev/null | sort || echo "(dpkg unavailable)"
+  echo
+
+  echo "## pipx"
+  pipx list --short 2>/dev/null || echo "(pipx not present / none)"
+  echo
+
+  echo "## pip (system)"
+  pip3 freeze 2>/dev/null || echo "(pip not present / none)"
+  echo
+
+  echo "## go-installed binaries (/usr/local/bin, module + version)"
+  for b in /usr/local/bin/*; do
+    [ -x "$b" ] || continue
+    v="$(go version -m "$b" 2>/dev/null | awk '/^[[:space:]]*mod[[:space:]]/{print $3" "$4; exit}')"
+    [ "$v" ] && printf '%s\t%s\n' "$(basename "$b")" "$v"
+  done
+  echo
+
+  echo "## /opt git clones (HEAD)"
+  for d in /opt/*/; do
+    [ -d "$d/.git" ] || continue
+    printf '%s\t%s\n' "$(basename "$d")" "$(git -C "$d" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  done
+} > "$f" 2>/dev/null
+
+echo "bill of materials written: $f"

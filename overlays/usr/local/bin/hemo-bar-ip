@@ -1,0 +1,116 @@
+#!/usr/bin/env sh
+# hemo-bar-ip — polybar helper for the target, VPN, LAN and egress-IP modules.
+#   hemo-bar-ip vpn          print the VPN address (first of tun*/wg*), or nothing
+#   hemo-bar-ip target       print the target from `hemo-target`, or nothing
+#   hemo-bar-ip egress       print the public (egress) IPv4 — see below
+#   hemo-bar-ip lan          print the LAN (internal) IPv4 of the default route
+#   hemo-bar-ip visible      print the IP a target would see: VPN tun* if up,
+#                            else the public egress IPv4 (same source as `egress`)
+#   hemo-bar-ip copy-vpn | copy-target | copy-egress | copy-lan | copy-visible
+#                            copy one of them to the clipboard
+#   hemo-bar-ip stamp        print the visible-IP segment the per-command stamp
+#                            prints next to the timestamp: "<glyph> <ip>", or
+#                            empty when neither VPN nor egress is known. Glyph:
+#                            󰒃 (nf-md-shield_check) VPN up, ⇡ (nf-oct-arrow_up)
+#                            raw egress — same two the engagement prompt uses.
+#   hemo-bar-ip refresh-egress                         re-check egress on the next bar tick
+#
+# Egress: the public IP can only be learned from outside, so this asks
+# icanhazip.com (Cloudflare; returns just the IP) over HTTPS. To keep that
+# traffic minimal it's cached and only re-checked every 5 min or when the route
+# out changes (e.g. a VPN comes up). `touch ~/.config/hemo/no-egress` disables
+# lookups entirely (e.g. during an engagement).
+
+TARGET_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/target"
+NO_EGRESS="${XDG_CONFIG_HOME:-$HOME/.config}/hemo/no-egress"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/hemo/egress"   # "<epoch> <route> <ip>"
+MAX_AGE=300
+
+vpn_ip() {
+    ip -4 -o addr show 2>/dev/null \
+        | awk '$2 ~ /^(tun|wg|tap)[0-9]/ { split($4, a, "/"); print a[1]; exit }'
+}
+
+lan_ip() {        # local source address of the default route (the LAN IP)
+    ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i+1); exit } }'
+}
+
+my_ip() {         # merged tile: the VPN/tunnel IP when connected, else the LAN IP
+    v=$(vpn_ip); [ -n "$v" ] && { echo "$v"; return; }
+    l=$(lan_ip); [ -n "$l" ] && { echo "$l"; return; }
+    echo offline
+}
+
+target() {        # exit 0 even when unset: polybar only hides an empty module on success
+    if [ -s "$TARGET_FILE" ]; then head -1 "$TARGET_FILE"; fi
+}
+
+route_key() {     # what the traffic leaves through: interface + source addr
+    ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{ for (i = 1; i < NF; i++) { if ($i == "dev") d = $(i+1); if ($i == "src") s = $(i+1) } } END { print d "/" s }'
+}
+
+egress() {
+    # Prints the public IP, or NOTHING (hides the whole tile) when it can't be
+    # determined — so you never see a lone "globe ?" (e.g. on a VPN that blocks
+    # the egress lookup, or when disabled/offline).
+    [ -e "$NO_EGRESS" ] && return
+    now=$(date +%s) key=$(route_key)
+    if [ -s "$CACHE" ]; then
+        read -r ts ckey cip < "$CACHE"
+        if [ "$ckey" = "$key" ] && [ $((now - ts)) -lt $MAX_AGE ]; then
+            echo "$cip"; return
+        fi
+        # route changed (e.g. VPN up/down): the old IP no longer applies
+        [ "$ckey" = "$key" ] || cip=""
+    fi
+    [ "$key" = "/" ] && return                                 # no route out -> hide
+    ip=$(curl -4 -fs --max-time 3 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+    case "$ip" in
+        *[!0-9.]*|"") [ -n "$cip" ] && echo "$cip"; return ;;  # failed: last known, else hide
+    esac
+    mkdir -p "$(dirname "$CACHE")"
+    echo "$now $key $ip" > "$CACHE"
+    echo "$ip"
+}
+
+copy() {
+    [ -n "$1" ] || exit 0
+    printf '%s' "$1" | xclip -selection clipboard
+    notify-send -t 1500 "Copied" "$1" 2>/dev/null || true
+}
+
+# The IP a target system would see from you: tun* when a VPN is up (HTB-style
+# virtual nets route traffic back to that IP), else the public egress (how a
+# host on the open internet sees you after NAT). Empty if neither is known.
+visible() {
+    v=$(vpn_ip); [ -n "$v" ] && { echo "$v"; return; }
+    e=$(egress); case "$e" in off|offline|\?|'') ;; *) echo "$e" ;; esac
+}
+
+# Per-command stamp segment used by the zsh preexec + pwsh AddToHistoryHandler.
+# Mirrors the engagement prompt's visible_vpn / visible_raw split: shield when
+# the VPN is up, arrow-up when raw egress. Empty when neither is known so the
+# stamp degrades to just the timestamp.
+stamp() {
+    v=$(vpn_ip); [ -n "$v" ] && { printf '\xf3\xb1\x90\x83 %s\n' "$v"; return; }   # 󰒃 (U+F0C43 nf-md-shield_check)
+    e=$(egress); case "$e" in off|offline|\?|'') ;; *) printf '\xe2\x87\xa1 %s\n' "$e" ;; esac   # ⇡ U+21E1
+}
+
+case "${1:-}" in
+    vpn)         vpn_ip ;;
+    ip)          my_ip ;;
+    lan)         lan_ip ;;
+    copy-ip)     v=$(my_ip); case "$v" in offline) ;; *) copy "$v" ;; esac ;;
+    copy-lan)    copy "$(lan_ip)" ;;
+    target)      target ;;
+    copy-vpn)    copy "$(vpn_ip)" ;;
+    copy-target) copy "$(target)" ;;
+    egress)      egress ;;
+    copy-egress) ip=$(egress); case "$ip" in off|offline|\?) ;; *) copy "$ip" ;; esac ;;
+    visible)     visible ;;
+    copy-visible) copy "$(visible)" ;;
+    stamp)       stamp ;;
+    refresh-egress) rm -f "$CACHE" ;;
+esac

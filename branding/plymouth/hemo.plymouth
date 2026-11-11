@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Hemo
+Description=Hemo boot glow
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/hemo
+ScriptFile=/usr/share/plymouth/themes/hemo/hemo.script

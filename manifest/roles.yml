@@ -1,0 +1,487 @@
+# Hemo — persona roles for the first-boot picker (Athena-style).
+#
+# MODEL (decided 2026-10-02):
+#   - Picker pops up on FIRST BOOT of a fresh clone (firstboot/ oneshot).
+#   - Tools install ONLINE at selection time (offline cache is a later mode).
+#   - Multi-select: every ticked role installs its tools. The FIRST role you
+#     select is your PRIMARY — it alone drives wallpaper / accent / bookmarks.
+#     Theme is changeable later (`hemo-theme <role>`), more roles
+#     installable later (`hemo-roles`).
+#
+# SCOPE NOTE: this set is FULL-SPECTRUM (purple) — offensive + defensive (blue)
+#   + vuln assessment. Cloud / AD / OSINT / Cracker are no longer standalone
+#   roles; their tools fold into Penetration Testing and Full.
+#
+# RESOLUTION: each `tools:` name must exist in manifest/apt.yml or extra.yml;
+#   the installer resolves method (apt/pipx/go/git/binary/build) + pin from there.
+#
+# PROFILE: accent (hex) / wallpaper (branding/assets/, falls back to hemo-bg.png)
+#   / bookmarks (policies.json folders to surface). Workspaces are plain 1-4
+#   for every role (static in i3/config), so they're not part of a profile.
+
+base_always:
+  note: "apt.yml base/desktop_i3/plumbing/branding + overlays + Firefox policy; baked at build time"
+
+roles:
+
+  red_team:
+    label: "Red Team"
+    summary: "C2, Post-exploitation, Lateral movement, Evasion, AD compromise"
+    profile:
+      accent: "#c41e2f"
+      icons: "Flat-Remix-Red-Dark"   # folder/app icon variant for this role
+      flower: "f9.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-redteam.png"
+      bookmarks: ["Recon", "Playbooks", "AD", "Exploits & CVEs", "Creds & Crypto", "People Search", "Docs"]
+    tools:
+      - trevorspray
+      # --- client network tools (moved out of the base 2026-10-09) ---
+      - wireshark
+      - tcpdump
+      - ncat
+      - netcat-traditional
+      - socat
+      - smbclient
+      - ldap-utils
+      - krb5-user
+      # --- OSINT / target recon ---
+      - theharvester
+      - spiderfoot
+      - recon-ng
+      - sherlock
+      - maltego
+      - dnsrecon
+      - dnsenum
+      - metagoofil
+      - holehe
+      - maigret
+      - nmap
+      - ffuf            # web content discovery / fuzzing
+      - feroxbuster     # recursive content discovery
+      - whatweb         # web fingerprinting
+      - evil-winrm
+      - enum4linux-ng
+      - hashcat
+      - john
+      - seclists
+      - smbmap
+      - powershell-empire
+      - starkiller
+      - mimikatz
+      - metasploit-framework
+      - proxychains4
+      - ligolo-ng
+      - chisel
+      - penelope
+      - Villain
+      - donut
+      - PEASS-ng
+      - pspy
+      - PayloadsAllTheThings
+      - SharpCollection
+      - netexec
+      - python3-impacket
+      - impacket-scripts
+      - bloodhound-ce   # CE Linux collector; server via `hemo-bloodhound up` (Docker)
+      - certipy-ad
+      - responder
+      - lsassy
+      - donpapi
+      - Snaffler
+      - evilginx        # phishing proxy — usually on a separate redirector, not the ops VM
+      - bettercap       # LAN MITM / sniffing
+      - sshuttle        # VPN-over-SSH pivoting
+      - ldeep           # offline LDAP/AD enumeration
+      # --- AD tools wired in from catalog (prune reconcile, 2026-10-03) ---
+      - mitm6           # IPv6 DNS takeover -> NTLM relay
+      - pypykatz        # offline LSASS / DPAPI parsing
+      - bloodyAD        # AD privilege escalation (DACL / ADCS)
+      - certsync        # NTDS dump via DRSUAPI + ADCS
+      - coercer         # authentication coercion (relay trigger)
+      - adidnsdump      # AD-integrated DNS enumeration
+      # --- stock-toolset backfill (2026-10-05): tools declutter.sh now strips ---
+      - aircrack-ng
+      - wifite
+      - macchanger
+      - medusa
+      - ncrack
+      - crunch
+      - rsmangler
+      - maskprocessor
+      - hashid
+      - samdump2
+      - creddump7
+      - chntpw
+      - gpp-decrypt
+      - passing-the-hash
+      - polenum
+      - set             # Social-Engineer Toolkit
+      - weevely
+      - webshells
+      - laudanum
+      - windows-binaries
+      - msfpc
+      - iodine          # DNS tunnel
+      - dns2tcp
+      - ptunnel         # ICMP tunnel
+      - udptunnel
+      - proxytunnel
+      - redsocks
+      - sslh
+      - dsniff
+      - ettercap-graphical
+      - spooftooph      # Bluetooth spoofing
+
+    # installed one-of at setup; hemo-welcome asks, default AdaptixC2
+    choices:
+      c2:
+        prompt: "Which C2 framework?"
+        default: AdaptixC2
+        options:
+          - AdaptixC2
+          - sliver
+  pentest:
+    label: "Penetration Testing"
+    summary: "Generalist assessment: Recon, AD, Web, Password, Exploitation"
+    profile:
+      accent: "#e0a93b"
+      icons: "Flat-Remix-Yellow-Dark"   # folder/app icon variant for this role
+      flower: "f2.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-pentest.png"
+      bookmarks: ["Recon", "AD", "Web & API", "Exploits & CVEs", "Playbooks", "Practice Targets", "People Search", "Docs"]
+    tools:
+      - trevorspray
+      # --- client network tools (moved out of the base 2026-10-09) ---
+      - tcpdump
+      - ncat
+      - netcat-traditional
+      - socat
+      - smbclient
+      - ldap-utils
+      - krb5-user
+      - burpsuite
+      - gowitness
+      - wireshark
+      - smbmap
+      - onesixtyone
+      - nmap
+      - masscan
+      - naabu
+      - subfinder
+      - dnsx
+      - httpx-toolkit
+      - katana
+      - amass
+      - theharvester
+      - whatweb
+      - wafw00f
+      - testssl.sh
+      - gitleaks
+      - netexec
+      - python3-impacket
+      - impacket-scripts
+      - bloodhound-ce   # CE Linux collector; server via `hemo-bloodhound up` (Docker)
+      - responder
+      - enum4linux-ng
+      - evil-winrm
+      - python3-ldapdomaindump
+      - kerbrute
+      - certipy-ad
+      - ffuf
+      - feroxbuster
+      - gobuster
+      - nuclei
+      - sqlmap
+      - nikto
+      - wpscan
+      - hydra
+      - hashcat
+      - john
+      - cewl
+      - seclists
+      - metasploit-framework
+      - exploitdb
+      - proxychains4
+      - PayloadsAllTheThings
+      - PEASS-ng
+      # --- Athena-sourced additions (2026-10-03) ---
+      - rustscan        # fast port sweep -> nmap
+      - dnsrecon
+      - dnsenum
+      - dnstwist        # typosquat / phishing-domain discovery
+      - sherlock        # username OSINT
+      - spiderfoot      # OSINT automation
+      - bettercap       # LAN MITM
+      - sshuttle        # pivoting
+      - ldeep           # LDAP/AD enum
+      - commix          # command-injection
+      - zaproxy         # free web scanner (Burp-Pro-free)
+      - interactsh-client   # out-of-band (OAST)
+      - hashcat-utils
+      - name-that-hash
+      # --- catalog reconcile (prune, 2026-10-03): these were in the catalog but
+      #     wired to no role, though the scope note folds AD/cloud/OSINT into pentest ---
+      - mitm6           # IPv6 DNS takeover -> NTLM relay
+      - pypykatz        # offline LSASS / DPAPI parsing
+      - bloodyAD        # AD privilege escalation (DACL / ADCS)
+      - certsync        # NTDS dump via DRSUAPI + ADCS
+      - coercer         # authentication coercion (relay trigger)
+      - adidnsdump      # AD-integrated DNS enumeration
+      - trufflehog      # secret scanning (complements gitleaks)
+      - discover        # leebaird/discover — recon wrapper
+      # cloud (scope: folds into pentest + full)
+      - pacu            # AWS exploitation framework
+      - scoutsuite      # multi-cloud security auditing
+      - prowler         # AWS/Azure/GCP CIS benchmark checks
+      - roadrecon       # Azure AD recon
+      - cloudfox        # cloud attack-surface enumeration
+      - awscli
+      - azure-cli
+      - azurehound      # Azure AD collector for BloodHound CE
+      # --- stock-toolset backfill (2026-10-05): tools declutter.sh now strips ---
+      - aircrack-ng
+      - wifite
+      - reaver
+      - pixiewps
+      - bully
+      - macchanger
+      - arp-scan
+      - netdiscover
+      - fping
+      - hping3
+      - fierce
+      - dmitry
+      - dnsmap
+      - snmpcheck
+      - nbtscan
+      - dirb
+      - dirbuster
+      - skipfish
+      - davtest
+      - cadaver
+      - medusa
+      - ncrack
+      - patator
+      - crunch
+      - rsmangler
+      - maskprocessor
+      - hashid
+      - hash-identifier
+      - samdump2
+      - creddump7
+      - chntpw
+      - gpp-decrypt
+      - passing-the-hash
+      - polenum
+      - set             # Social-Engineer Toolkit
+      - weevely
+      - msfpc
+      - iodine
+      - dns2tcp
+      - ptunnel
+      - proxytunnel
+      - dsniff
+      - ettercap-graphical
+      - sslyze
+
+  web:
+    label: "Web"
+    summary: "Web and API application testing"
+    profile:
+      accent: "#9b6dd6"
+      icons: "Flat-Remix-Purple-Dark"   # folder/app icon variant for this role
+      flower: "f8.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-web.png"
+      bookmarks: ["Web & API", "Playbooks", "Recon", "Exploits & CVEs", "Practice Targets", "Docs"]
+    tools:
+      # --- client network tools (moved out of the base 2026-10-09) ---
+      - ncat
+      - netcat-traditional
+      - socat
+      - wfuzz
+      - sslscan
+      - cmseek
+      - burpsuite
+      - ffuf
+      - feroxbuster
+      - gobuster
+      - nuclei
+      - sqlmap
+      - wpscan
+      - nikto
+      - arjun
+      - dalfox
+      - gau
+      - gowitness
+      - jwt_tool
+      - katana
+      - httpx-toolkit
+      - mitmproxy
+      - whatweb
+      - wafw00f
+      - testssl.sh
+      - PayloadsAllTheThings
+      # --- Athena-sourced additions (2026-10-03) ---
+      - commix          # command-injection exploitation
+      - interactsh-client   # out-of-band (OAST) catcher
+      - graphw00f       # GraphQL fingerprinting
+      - graphqlmap      # GraphQL exploitation
+      - zaproxy         # free automated web scanner
+      - caido           # modern Rust intercepting proxy
+      # --- stock-toolset backfill (2026-10-05): tools declutter.sh now strips ---
+      - dirb
+      - dirbuster
+      - skipfish
+      - davtest
+      - cadaver
+      - sslyze
+      - ssldump
+
+  reverse:
+    label: "Reverse"
+    summary: "Binary, Android/Java, and loot analysis: Ghidra, debuggers, unpacking"
+    profile:
+      accent: "#d9763b"
+      icons: "Flat-Remix-Orange-Dark"   # folder/app icon variant for this role
+      flower: "f6.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-reverse.png"
+      bookmarks: ["Exploits & CVEs", "Playbooks", "Docs"]
+    tools:
+      - ghidra
+      - gdb-multiarch
+      - apktool
+      - jadx
+      - dex2jar
+      - jd-gui
+      - yara
+      - patchelf
+      - hexedit
+      - edb-debugger
+      - frida
+      - angr
+      - radare2
+      - binwalk
+      - libimage-exiftool-perl
+      - gdb
+      - pwndbg
+      - ltrace
+      - strace
+      # --- Athena-sourced additions (2026-10-03) ---
+      - rizin           # radare2 fork
+      - rizin-cutter    # GUI disassembler on rizin
+      - upx-ucl         # pack/unpack UPX
+      - flare-floss     # obfuscated-string extraction
+      - python3-pwntools  # exploit-dev / CTF
+      - python3-ropgadget          # ROP gadgets
+      - oletools        # malicious Office-doc analysis
+
+  blue_host:
+    label: "Blue Host Analyst"
+    summary: "Defensive host / endpoint DFIR: Forensics, Triage, Malware, Audit"
+    profile:
+      accent: "#3a8ed0"
+      icons: "Flat-Remix-Blue-Dark"   # folder/app icon variant for this role
+      flower: "f7.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-bluehost.png"
+      bookmarks: ["Blue Team", "Exploits & CVEs", "Docs"]
+    tools:
+      - loki
+      - capa
+      - hayabusa
+      - velociraptor
+      - sleuthkit
+      - autopsy
+      - yara
+      - chkrootkit
+      - rkhunter
+      - clamav
+      - lynis
+      - bulk-extractor
+      - foremost
+      - regripper
+      - volatility3
+      - plaso
+      - chainsaw
+      - ewf-tools
+      - dc3dd
+      - libimage-exiftool-perl
+      - binwalk
+      # --- Athena-sourced additions (2026-10-03) ---
+      - oletools        # malicious Office macro/doc analysis
+      - pdfid           # malicious-PDF triage
+      - pdf-parser      # malicious-PDF object inspection
+      - osquery         # endpoint telemetry / live IR queries
+      # --- stock-toolset backfill (2026-10-05): DFIR carving/imaging ---
+      - scalpel
+      - magicrescue
+      - guymager
+      - hashdeep
+      # log analytics (EVTX/JSON/syslog → Kibana-style UI) — heavy; run as a Docker
+      # container via `hemo-elk up`, not a role tool. EVTX: hayabusa/chainsaw → JSON,
+      # then `hemo-elk ingest`. Default engine OpenSearch+Dashboards; --engine elastic
+      # for Elasticsearch+Kibana.
+
+  blue_net:
+    label: "Blue Net Analyst"
+    summary: "Defensive network security monitoring: IDS, Traffic + flow analysis"
+    profile:
+      accent: "#2bb3a3"
+      icons: "Flat-Remix-Teal-Dark"   # folder/app icon variant for this role
+      flower: "f4.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-bluenet.png"
+      bookmarks: ["Blue Team", "Recon", "Docs"]
+    tools:
+      # --- client network tools (moved out of the base 2026-10-09) ---
+      - tcpdump
+      - termshark
+      - netsniff-ng
+      - tcpreplay
+      - suricata
+      - snort
+      - tshark
+      - ngrep
+      - tcpflow
+      - p0f
+      - nfdump
+      - wireshark
+      - networkminer
+      # arkime (PCAP indexing) — heavy; run as a Docker container, not via a role
+      # hemo-elk (log analytics: flow/alert JSON → Kibana-style UI) — heavy; Docker
+      # container via `hemo-elk up`. Default OpenSearch+Dashboards; --engine elastic.
+
+  vuln_assessor:
+    label: "Vulnerability Assessor"
+    summary: "Authenticated/unauth scanning, Triage, and reporting"
+    profile:
+      accent: "#b5c23a"
+      icons: "Flat-Remix-Green-Dark"   # folder/app icon variant for this role
+      flower: "f5.svg"       # desert bloom shown in the role picker
+      wallpaper: "hemo-bg-vuln.png"
+      bookmarks: ["Exploits & CVEs", "Recon", "Web & API", "Docs"]
+    tools:
+      - grype
+      - nmap
+      - nuclei
+      - nikto
+      - wpscan
+      - testssl.sh
+      - whatweb
+      - wafw00f
+      - sqlmap
+      - ffuf            # web content discovery / fuzzing
+      - exploitdb
+      - legion
+      - gvm            # Greenbone/OpenVAS — HEAVY
+      - trivy
+      - zaproxy        # free automated web scanner for authenticated/baseline scans
+
+  full:
+    label: "Full Scope"
+    summary: "Install every role's tools — the batteries-included purple box"
+    profile:
+      accent: "#8f9aa3"           # neutral steel
+      icons: "Flat-Remix-Slate-Dark"   # folder/app icon variant for this role
+      flower: "f1.svg"           # desert bloom shown in the role picker
+      wallpaper: "hemo-bg.png"    # base art
+      bookmarks: ["Recon", "AD", "Web & API", "Cloud", "Creds & Crypto", "Exploits & CVEs", "Playbooks", "Blue Team", "Practice Targets", "People Search", "Docs"]
+    tools: [ "*" ]                # installer expands to the union of all roles above

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# hemo-adaptix — build and run AdaptixC2 entirely in Docker (no Go/Qt on the
+# host). Uses upstream's own multi-stage docker targets; fits Hemo's "heavy
+# things as containers" model like hemo-bloodhound / hemo-arkime.
+#
+# The server + extenders are built in a container into AdaptixServer/server-dist,
+# the Qt client is built into a client binary, and the server runs as the
+# `adaptix-server-runtime` container (upstream compose, host networking).
+#
+#   hemo-adaptix build        # clone + docker-build server+extenders (+ client)
+#   hemo-adaptix up           # run the teamserver container (make docker-up)
+#   hemo-adaptix down         # stop it
+#   hemo-adaptix status       # container state
+#   hemo-adaptix client       # launch the built Qt client (GUI, on the host)
+#   hemo-adaptix logs         # follow server logs
+#   hemo-adaptix destroy      # stop + remove images/volumes (asks first)
+#
+# Teamserver defaults (upstream profile.yaml): 0.0.0.0:4321, endpoint /endpoint,
+# password "pass" — CHANGE IT before real use: edit
+# /opt/hemo/adaptix/AdaptixServer/server-dist/profile.yaml then `hemo-adaptix up`.
+set -uo pipefail
+
+DIR=/opt/hemo/adaptix
+REPO=https://github.com/Adaptix-Framework/AdaptixC2
+REF="${HEMO_ADAPTIX_REF:-}"          # pin a tag/commit by exporting this
+DIST="$DIR/AdaptixServer/server-dist"
+
+RED="\033[1;31m"; OFF="\033[0m"
+say(){ printf "${RED}[hemo-adaptix]${OFF} %s\n" "$*"; }
+
+# human elapsed since an epoch start ("45s" / "12m07s")
+_elapsed(){ local s=$(( $(date +%s) - $1 )); if [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s/60)) $((s%60)); else printf '%ds' "$s"; fi; }
+
+# Run a long build step with a header, a 60s "still working" heartbeat (so the
+# buildkit output sitting on one cmake line doesn't read as hung), and a final
+# elapsed time. Heartbeat only when attached to a terminal.
+_run_step(){
+  local label="$1"; shift
+  local start hb=""; start=$(date +%s)
+  printf "\n${RED}[hemo-adaptix]${OFF} %s\n" "$label"
+  if [ -t 1 ]; then
+    ( while :; do sleep 60; printf "${RED}[hemo-adaptix]${OFF}   … working — %s elapsed (a long compile step is normal here)\n" "$(_elapsed "$start")"; done ) &
+    hb=$!
+  fi
+  "$@"; local rc=$?
+  [ -n "$hb" ] && { kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null; }
+  [ "$rc" -eq 0 ] && say "$label — done in $(_elapsed "$start")"
+  return $rc
+}
+
+need_docker(){
+  command -v docker >/dev/null 2>&1 || { echo "hemo-adaptix: docker not installed"; exit 1; }
+  if ! docker info >/dev/null 2>&1; then
+    echo "hemo-adaptix: cannot talk to the docker daemon (start it / join the 'docker' group, or use sudo)."
+    exit 1
+  fi
+  docker compose version >/dev/null 2>&1 || { echo "hemo-adaptix: 'docker compose' v2 required"; exit 1; }
+}
+
+clone(){
+  if [ ! -d "$DIR/.git" ]; then
+    echo "[hemo-adaptix] cloning AdaptixC2 -> $DIR"
+    install -d "$(dirname "$DIR")"
+    git clone "$REPO" "$DIR" || return 1
+  fi
+  [ -n "$REF" ] && git -C "$DIR" checkout "$REF"
+  return 0
+}
+
+# the teamserver needs a TLS keypair referenced by profile.yaml
+ensure_certs(){
+  install -d "$DIST"
+  if [ ! -f "$DIST/server.rsa.crt" ] || [ ! -f "$DIST/server.rsa.key" ]; then
+    echo "[hemo-adaptix] generating teamserver TLS cert"
+    openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+      -subj "/CN=adaptix" \
+      -keyout "$DIST/server.rsa.key" -out "$DIST/server.rsa.crt" >/dev/null 2>&1 || true
+  fi
+}
+
+case "${1:-status}" in
+  build)
+    need_docker; clone || { echo "clone failed"; exit 1; }
+    bstart=$(date +%s)
+    printf "\n${RED}══ Building AdaptixC2 in Docker ══${OFF}\n"
+    echo "Compiles a Go teamserver + extenders, then a Qt/C++ client, inside"
+    echo "containers (nothing is installed on the host). First run is CPU-bound:"
+    echo "typically 15–30 min on 4 cores. It is NOT stuck while the output sits on"
+    echo "a 'RUN cmake --build' line — that is the client compiling."
+    echo "Watch real progress in another terminal with:"
+    echo "    watch -n5 'ps -eo etime,pcpu,comm --sort=-pcpu | grep -E \"cc1plus|cmake|go\"'"
+    _run_step "Step 1/2 — server + extenders (Go)" \
+      make -C "$DIR" docker-build-server-ext || { echo "[!] server/extenders build failed"; exit 1; }
+    _run_step "Step 2/2 — Qt client (C++, the long one)" \
+      make -C "$DIR" docker-build-client || echo "[!] client build failed (server still usable; build the client later: hemo-adaptix build)"
+    ensure_certs
+    say "built in $(_elapsed "$bstart"). Review $DIST/profile.yaml (default password 'pass'), then: hemo-adaptix up"
+    ;;
+  up)
+    need_docker
+    [ -d "$DIST" ] || { echo "not built yet — run: hemo-adaptix build"; exit 1; }
+    ensure_certs
+    make -C "$DIR" docker-up && echo "[hemo-adaptix] teamserver up (profile: $DIST/profile.yaml). Client: hemo-adaptix client"
+    ;;
+  down)    need_docker; make -C "$DIR" docker-down; echo "[hemo-adaptix] stopped";;
+  status)
+    if [ -d "$DIR" ]; then docker ps --filter name=adaptix-server-runtime 2>/dev/null; else echo "not installed — run: hemo-adaptix build"; fi;;
+  logs)    need_docker; make -C "$DIR" docker-logs;;
+  client)
+    # the client build ships an AppImage (AdaptixClient-x86_64.AppImage); older
+    # builds produced a plain AdaptixClient binary. Match either, newest first.
+    bin=$(find "$DIR" -maxdepth 4 -type f \
+            \( -iname 'AdaptixClient*.AppImage' -o -iname 'AdaptixClient' -o -iname 'adaptixclient' \) \
+            -perm -u+x -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    [ -n "$bin" ] || { echo "client binary not found — run: hemo-adaptix build"; exit 1; }
+    echo "[hemo-adaptix] launching $bin"
+    echo "  in the client's Connect box:  URL https://127.0.0.1:4321/endpoint · user <any> · password 'pass'"
+    echo "  (accept the self-signed cert; the teamserver is NOT a web page — a browser 404s)"
+    # The client ships as a FUSE2 AppImage, but Hemo (like current Kali) has only
+    # FUSE3 / no libfuse.so.2, so a direct run dies with "error loading libfuse.so.2".
+    # --appimage-extract-and-run unpacks to a temp dir and needs no FUSE at all.
+    if printf '%s' "$bin" | grep -qi '\.AppImage$'; then
+      setsid "$bin" --appimage-extract-and-run >/dev/null 2>&1 &
+    else
+      setsid "$bin" >/dev/null 2>&1 &
+    fi
+    ;;
+  destroy)
+    need_docker
+    printf "This removes AdaptixC2 images/volumes. Type 'yes': "; read -r a
+    [ "$a" = yes ] || { echo "aborted"; exit 0; }
+    make -C "$DIR" docker-clean-all 2>/dev/null; echo "[hemo-adaptix] removed (clone kept at $DIR; rm -rf to delete)";;
+  *) echo "usage: hemo-adaptix [build|up|down|status|logs|client|destroy]"; exit 1;;
+esac

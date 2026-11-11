@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# hemo-report — snap the desktop to the TEAM SCREENSHOT STANDARD, and back.
+#
+# For professional engagements every operator's screenshots must look identical:
+# same font size (terminal + UI), same theme (light/dark + accent + colors),
+# same shell prompt, same opacity/gaps. Operators can rice their box however they
+# like day to day; one hotkey ($mod+p) flips to the standard for captures, and
+# flips back to their personal look afterwards.
+#
+#   hemo-report            # toggle on/off
+#   hemo-report on|off     # force
+#   hemo-report status     # show state + which profile is active
+#   hemo-report set        # capture the CURRENT look as the standard (this user)
+#   hemo-report set --system   # ...as the system-wide default (root; for the repo)
+#   hemo-report edit       # open the standard's profile.env in $EDITOR
+#   hemo-report get KEY    # print one setting of the active standard
+#   hemo-report put KEY V  # change one setting in this user's standard (seeded from
+#                          # the shipped one); re-applies live if report mode is on
+#   hemo-report reset      # drop this user's standard, back to the shipped one
+#     KEY: MODE dark|light|kali|black · ACCENT #rrggbb · TEXT 6..32 (or small|medium|large)
+#          OPACITY 100|95|90|85 · GAPS tight|comfortable|roomy · BORDER 0|2|4
+#          TERMFG default|#rrggbb (terminal text color)
+#          TERMCOLORS auto|gruvbox|kali|dracula|nord|solarized|tokyonight|catppuccin|onedark
+#          PROMPT <preset in /usr/share/hemo/prompts> (copied to the standard's starship.toml)
+#   (the Appearance panel's "Report standard" rows use get/put/reset)
+#
+# The standard lives in profile.env + starship.toml, resolved in order:
+#   ~/.config/hemo/report/   (per-user override)   →   /usr/share/hemo/report/ (shipped)
+# It is just text — edit it, or capture it with `set`, then commit it to the repo
+# so the whole team inherits the same standard.
+set -uo pipefail
+
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+HEMO="$CFG/hemo"
+ACTIVE="$HEMO/report.active"
+BK="$HEMO/report-backup"
+STARSHIP="$CFG/starship.toml"
+SYS_DIR=/usr/share/hemo/report
+PROMPTS=/usr/share/hemo/prompts
+USER_DIR="$HEMO/report"
+
+note(){ command -v dunstify >/dev/null && dunstify -a Hemo -u low "Hemo" "$1" 2>/dev/null || true; echo "[hemo-report] $1"; }
+
+# where the standard is read from
+profile_dir(){
+  for d in "$USER_DIR" "$SYS_DIR"; do [ -f "$d/profile.env" ] && { echo "$d"; return; }; done
+}
+
+# appearance getters, coercing "default" to the documented default value
+appr(){ local v; v="$(hemo-appearance get "$1" 2>/dev/null)"; [ -z "$v" ] || [ "$v" = default ] && v="$2"; echo "$v"; }
+cur_mode(){ local v; v="$(cat "$HEMO/mode" 2>/dev/null)"; case "$v" in light|kali|black) echo "$v";; *) echo dark;; esac; }
+cur_accent(){ cat "$HEMO/accent" 2>/dev/null || echo "#c41e2f"; }
+
+snapshot(){   # save the operator's current personal look
+  mkdir -p "$BK"
+  {
+    echo "MODE=$(cur_mode)"
+    echo "ACCENT=$(cur_accent)"
+    echo "TEXT=$(appr text medium)"
+    echo "OPACITY=$(appr opacity 100)"
+    echo "GAPS=$(appr gaps comfortable)"
+    echo "BORDER=$(appr border 2)"
+    echo "TERMFG=$(appr termfg default)"
+    echo "TERMCOLORS=$(appr termcolors auto)"
+    echo "PYWAL=$([ -f "$HEMO/pywal" ] && echo on || echo off)"
+  } > "$BK/profile.env"
+  [ -f "$STARSHIP" ] && cp -f "$STARSHIP" "$BK/starship.toml" || rm -f "$BK/starship.toml"
+}
+
+apply_profile(){   # apply a profile.env (+ sibling starship.toml) from dir $1
+  local dir="$1"; [ -n "$dir" ] || { echo "no standard profile found"; return 1; }
+  # shellcheck disable=SC1091
+  MODE=dark ACCENT="#c41e2f" TEXT=medium OPACITY=100 GAPS=comfortable BORDER=2 TERMFG=default TERMCOLORS=auto
+  . "$dir/profile.env"
+  hemo-role-apply --mode "$MODE"            >/dev/null 2>&1
+  hemo-role-apply --accent "$ACCENT"        >/dev/null 2>&1
+  hemo-appearance set text "$TEXT"          >/dev/null 2>&1
+  hemo-appearance set opacity "$OPACITY"    >/dev/null 2>&1
+  hemo-appearance set gaps "$GAPS"          >/dev/null 2>&1
+  hemo-appearance set border "$BORDER"      >/dev/null 2>&1
+  hemo-appearance set termfg "$TERMFG"      >/dev/null 2>&1
+  hemo-appearance set termcolors "$TERMCOLORS" >/dev/null 2>&1
+  [ -f "$dir/starship.toml" ] && cp -f "$dir/starship.toml" "$STARSHIP"
+}
+
+report_on(){
+  [ -f "$ACTIVE" ] && { note "already in report mode"; return; }
+  local dir; dir="$(profile_dir)"
+  [ -n "$dir" ] || { note "no standard set — run 'hemo-report set' first"; return 1; }
+  snapshot
+  # pywal would hijack the standard (role-apply follows it) — turn it off first
+  [ -f "$HEMO/pywal" ] && command -v hemo-pywal >/dev/null && hemo-pywal off >/dev/null 2>&1
+  apply_profile "$dir"
+  echo "1" > "$ACTIVE"
+  note "Report mode ON — team screenshot standard"
+}
+
+report_off(){
+  [ -f "$ACTIVE" ] || { note "not in report mode"; return; }
+  local was_pywal=off
+  [ -f "$BK/profile.env" ] && was_pywal=$(sed -n 's/^PYWAL=//p' "$BK/profile.env")
+  if [ -f "$BK/profile.env" ]; then
+    apply_profile "$BK"
+  fi
+  rm -f "$ACTIVE"
+  # restore pywal if the operator had it on
+  [ "$was_pywal" = on ] && command -v hemo-pywal >/dev/null && hemo-pywal on >/dev/null 2>&1
+  note "Personal settings restored"
+}
+
+capture(){   # write current look as the standard
+  local dir="$USER_DIR"
+  if [ "${1:-}" = "--system" ]; then
+    [ "$(id -u)" -eq 0 ] || exec sudo -E "$0" set --system
+    dir="$SYS_DIR"
+  fi
+  mkdir -p "$dir"
+  {
+    echo "# Hemo report (team screenshot) standard — captured $(date -Iseconds)"
+    echo "MODE=$(cur_mode)"
+    echo "ACCENT=$(cur_accent)"
+    echo "TEXT=$(appr text medium)"
+    echo "OPACITY=$(appr opacity 100)"
+    echo "GAPS=$(appr gaps comfortable)"
+    echo "BORDER=$(appr border 2)"
+    echo "TERMFG=$(appr termfg default)"
+    echo "TERMCOLORS=$(appr termcolors auto)"
+  } > "$dir/profile.env"
+  [ -f "$STARSHIP" ] && cp -f "$STARSHIP" "$dir/starship.toml"
+  note "captured current look as the standard -> $dir"
+  refresh_qt_schemes
+  [ "$dir" = "$SYS_DIR" ] && echo "  commit $SYS_DIR/* into the repo (overlays/usr/share/hemo/report/) to ship it."
+}
+
+# qtermwidget >=2.4 reads color schemes ONLY from /usr/share, so the qterminal
+# capture scheme (HemoShot) can't follow a per-user standard change on its own.
+# Rebuild it as root (pkexec asks for a password) — only when qterminal is
+# installed; kitty reads the standard live and needs nothing.
+refresh_qt_schemes(){
+  command -v qterminal >/dev/null 2>&1 || return 0
+  command -v hemo-role-apply >/dev/null 2>&1 || return 0
+  if [ "$(id -u)" -eq 0 ]; then
+    hemo-role-apply --qterminal-schemes >/dev/null 2>&1 && return 0
+  elif command -v pkexec >/dev/null 2>&1; then
+    pkexec "$(command -v hemo-role-apply)" --qterminal-schemes >/dev/null 2>&1 && return 0
+  fi
+  note "qterminal capture colors not updated — run: sudo hemo-role-apply --qterminal-schemes"
+}
+
+valid(){   # valid KEY VALUE — the same choices the Appearance panel offers
+  case "$1=$2" in
+    MODE=dark|MODE=light|MODE=kali|MODE=black|TEXT=small|TEXT=medium|TEXT=large) ;;
+    TEXT=[0-9]|TEXT=[0-9][0-9]) [ "$2" -ge 6 ] && [ "$2" -le 32 ] || return 1 ;;
+    OPACITY=100|OPACITY=95|OPACITY=90|OPACITY=85|BORDER=0|BORDER=2|BORDER=4) ;;
+    GAPS=tight|GAPS=comfortable|GAPS=roomy) ;;
+    TERMFG=default) ;;
+    TERMCOLORS=auto|TERMCOLORS=gruvbox|TERMCOLORS=kali|TERMCOLORS=dracula|TERMCOLORS=nord) ;;
+    TERMCOLORS=solarized|TERMCOLORS=tokyonight|TERMCOLORS=catppuccin|TERMCOLORS=onedark) ;;
+    TERMFG=\#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+    PROMPT=*) case "$2" in ""|*[!a-z]*) return 1;; esac; [ -f "$PROMPTS/$2.toml" ] || return 1 ;;
+    ACCENT=\#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+    *) return 1 ;;
+  esac
+}
+
+get_key(){
+  local d v; d="$(profile_dir)"
+  [ -n "$d" ] && v="$(sed -n "s/^$1=//p" "$d/profile.env" | tail -n1)"
+  if [ -z "${v:-}" ]; then
+    case "$1" in MODE) v=dark;; ACCENT) v="#c41e2f";; TEXT) v=medium;; OPACITY) v=100;;
+                 GAPS) v=comfortable;; BORDER) v=2;; PROMPT) v=stock;; TERMFG) v=default;; TERMCOLORS) v=auto;; esac
+  fi
+  echo "${v%%[[:space:]]*}"
+}
+
+put_key(){
+  valid "$1" "$2" || { echo "invalid: $1=$2"; exit 1; }
+  local f="$USER_DIR/profile.env"
+  if [ ! -f "$f" ]; then   # first personal edit: start from the shipped standard
+    mkdir -p "$USER_DIR"
+    if [ -f "$SYS_DIR/profile.env" ]; then cp -f "$SYS_DIR/profile.env" "$f"; else : > "$f"; fi
+    [ -f "$SYS_DIR/starship.toml" ] && [ ! -f "$USER_DIR/starship.toml" ] \
+      && cp -f "$SYS_DIR/starship.toml" "$USER_DIR/starship.toml"
+  fi
+  if grep -q "^$1=" "$f"; then sed -i "s|^$1=.*|$1=$2|" "$f"; else echo "$1=$2" >> "$f"; fi
+  [ "$1" = PROMPT ] && cp -f "$PROMPTS/$2.toml" "$USER_DIR/starship.toml"
+  [ -f "$ACTIVE" ] && apply_profile "$USER_DIR"
+  case "$1" in MODE|ACCENT|TERMFG|TERMCOLORS) refresh_qt_schemes ;; esac
+  return 0
+}
+
+reset_user(){
+  rm -f "$USER_DIR/profile.env" "$USER_DIR/starship.toml"
+  [ -f "$ACTIVE" ] && apply_profile "$(profile_dir)"
+  note "report standard reset to the shipped default"
+  refresh_qt_schemes
+}
+
+case "${1:-toggle}" in
+  toggle) [ -f "$ACTIVE" ] && report_off || report_on ;;
+  on)     report_on ;;
+  off)    report_off ;;
+  status)
+    if [ -f "$ACTIVE" ]; then echo "report mode: ON (team standard)"; else echo "report mode: off (personal)"; fi
+    echo "standard profile: $(profile_dir || echo '(none — run hemo-report set)')" ;;
+  set)    shift; capture "$@" ;;
+  edit)   d="$(profile_dir)"; [ -n "$d" ] || { mkdir -p "$USER_DIR"; d="$USER_DIR"; : > "$d/profile.env"; }
+          "${EDITOR:-nano}" "$d/profile.env"; refresh_qt_schemes ;;
+  get)    get_key "${2:?key}" ;;
+  put)    put_key "${2:?key}" "${3:?value}" ;;
+  reset)  reset_user ;;
+  term)   shift; exec hemo-shotterm "$@" ;;   # standard look in a separate window (no global toggle)
+  *) echo "usage: hemo-report [toggle|on|off|status|set [--system]|edit|get KEY|put KEY VALUE|reset|term]"; exit 1 ;;
+esac

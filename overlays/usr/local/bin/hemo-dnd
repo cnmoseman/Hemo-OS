@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# hemo-dnd — toggle Do-Not-Disturb (pause dunst notifications). Silences popups
+# during a screen-share, screen recording, or while taking report screenshots.
+# Toggle with $mod+Shift+m.
+#
+#   hemo-dnd [toggle|on|off|status]
+set -u
+command -v dunstctl >/dev/null 2>&1 || { echo "dunstctl not found"; exit 1; }
+notify(){ command -v dunstify >/dev/null 2>&1 && dunstify -r 9702 -t "$1" "$2" "${3:-}" || true; }
+
+enable_dnd(){  notify 1200 "Do Not Disturb" "Notifications paused"; sleep 1.2; dunstctl set-paused true; }
+disable_dnd(){ dunstctl set-paused false; notify 2000 "Notifications on" ""; }
+
+case "${1:-toggle}" in
+  on)     enable_dnd ;;
+  off)    disable_dnd ;;
+  status) dunstctl is-paused ;;
+  *)      [ "$(dunstctl is-paused)" = true ] && disable_dnd || enable_dnd ;;
+esac
